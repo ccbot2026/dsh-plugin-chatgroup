@@ -53,6 +53,22 @@ test('V2.1: maxGroups limits concurrent groups in one session', () => {
   assert.throws(() => service.create(agent), /最多 1 个群/)
 })
 
+test('V0.4.0: updateConfig maxGroups takes effect on create (panel-set cap)', () => {
+  const service = makeService({ maxGroups: 1 })
+  const agent = makeAgent()
+  service.create(agent)
+  // Panel raises the cap to 3; a second/third group may now be created.
+  service.updateConfig(agent, { maxGroups: 3 })
+  const second = service.create(agent)
+  assert.equal(second.groupId, 'group-2')
+  const third = service.create(agent)
+  assert.equal(third.groupId, 'group-3')
+  // Cap now enforced at 3.
+  assert.throws(() => service.create(agent), /最多 3 个群/)
+  // Group-level config reflects the raised cap.
+  assert.equal(service.snapshot(agent, 'group-1').config.maxGroups, 3)
+})
+
 test('V2.1: multiple groups coexist with isolated members/messages', async () => {
   const service = makeService({ maxGroups: 4 })
   const agent = makeAgent()

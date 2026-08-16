@@ -113,6 +113,8 @@ export class ChatGroupService {
   private readonly groups = new Map<SessionId, Map<GroupId, InternalGroup>>()
   private readonly waiters = new Map<string, Set<RevisionWaiter>>()
   private readonly currentGroupId = new Map<SessionId, GroupId>()
+  /** V0.4.0-①: per-session maxGroups override set via updateConfig (create limit). */
+  private readonly sessionMaxGroups = new Map<SessionId, number>()
   private readonly config: ChatGroupConfig
 
   constructor(private readonly ctx: Context, config: ChatGroupServiceConfig = {}) {
@@ -234,10 +236,11 @@ export class ChatGroupService {
     this.ensureLoaded(agent)
     const sessionGroups = this.groups.get(sessionId)
     const groupCount = sessionGroups?.size ?? 0
-    if (groupCount >= this.config.maxGroups) {
+    const effectiveMaxGroups = this.sessionMaxGroups.get(sessionId) ?? this.config.maxGroups
+    if (groupCount >= effectiveMaxGroups) {
       throw new ChatGroupError(
         'GROUP_LIMIT_EXCEEDED',
-        `当前会话最多 ${String(this.config.maxGroups)} 个群（maxGroups 可配置）`,
+        `当前会话最多 ${String(effectiveMaxGroups)} 个群（maxGroups 可配置）`,
       )
     }
 
@@ -348,6 +351,7 @@ export class ChatGroupService {
     }
     this.groups.delete(sessionId)
     this.currentGroupId.delete(sessionId)
+    this.sessionMaxGroups.delete(sessionId)
   }
 
   disposeAll(): void {
@@ -581,6 +585,11 @@ export class ChatGroupService {
     }
 
     group.settings = next
+    // V0.4.0-①: maxGroups is a per-session cap; keep the create limit in sync
+    // with what the panel sets (any group's config update applies session-wide).
+    if (patch.maxGroups !== undefined) {
+      this.sessionMaxGroups.set(group.sessionId, next.maxGroups)
+    }
     group.members = group.members.map(member => member.kind === 'ai' && member.ai !== undefined
       ? { ...member, ai: { ...member.ai, tools: [...next.readonlyTools] } }
       : member)
