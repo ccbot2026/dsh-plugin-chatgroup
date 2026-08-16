@@ -9,15 +9,19 @@ import { DEFAULT_READONLY_TOOLS } from '../dist/types.js'
  * later call (Bob, or Alice again) blocks until aborted. This models a first
  * round where Alice already produced a remark while Bob is still pending.
  */
+/**
+ * Harness: Alice's calls complete immediately with a real reply that echoes
+ * the topic title; Bob (and every other member) blocks until aborted. This
+ * models a first round where Alice already produced a remark while Bob is
+ * still pending, and works across topics.
+ */
 function makeInterruptHarness() {
-  let aliceSettled = false
   const ctx = {
     subagents: {
       async start(_name, request) {
         const promptText = request.prompt[0].text
         const name = /你是群聊成员“([^”]+)”/.exec(promptText)?.[1] ?? 'AI'
-        if (name === 'Alice' && !aliceSettled) {
-          aliceSettled = true
+        if (name === 'Alice') {
           return {
             id: request.parent.session.id,
             localAgent: undefined,
@@ -109,4 +113,40 @@ test('V2.4: clean (non-interrupted) first round produces no summary', async () =
     return snap.status === 'idle' ? snap : null
   })
   assert.ok(!idle.messages.some(m => m.senderId === 'system' && m.text.includes('首轮已由用户中断')))
+})
+
+test('V2.4: interrupt summary only includes current-topic messages (no cross-topic leak)', async () => {
+  const service = makeInterruptHarness()
+  const agent = makeAgent()
+  service.create(agent)
+  service.addMember(agent, { name: 'Alice', provider: 'deepseek', model: 'chat' })
+
+  // Round 1 in topic-1: only Alice, completes cleanly without interruption.
+  service.send(agent, 'topic-1 议题')
+  const idle1 = await waitFor(() => {
+    const snap = service.snapshot(agent)
+    return snap.status === 'idle' && snap.round === 1 ? snap : null
+  })
+  assert.ok(!idle1.messages.some(m => m.senderId === 'system' && m.text.includes('首轮已由用户中断')))
+
+  // Add Bob (blocks), then start topic-2: Alice completes, Bob pending, stop.
+  service.addMember(agent, { name: 'Bob', provider: 'deepseek', model: 'chat' })
+  service.startTopic(agent, 'topic-2 议题')
+  await waitFor(() => {
+    const snap = service.snapshot(agent)
+    const alice = snap.messages.find(m => m.senderId === snap.members.find(x => x.name === 'Alice')?.id && m.topicId === 'topic-2')
+    return alice !== undefined && alice.status === 'completed' && snap.currentSpeakerId !== undefined
+  })
+  service.stop(agent)
+  const idle2 = await waitFor(() => {
+    const snap = service.snapshot(agent)
+    return snap.status === 'idle' ? snap : null
+  })
+
+  const summary = idle2.messages.find(m => m.senderId === 'system' && m.text.includes('首轮已由用户中断'))
+  assert.ok(summary, 'expected an interrupt summary for topic-2')
+  // The summary must NOT contain topic-1's Alice remark text.
+  assert.ok(!summary.text.includes('topic-1 议题'))
+  // It should contain topic-2's Alice remark.
+  assert.ok(summary.text.includes('Alice 的关键观点'))
 })

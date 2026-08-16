@@ -131,6 +131,10 @@ test('V2.3: AI message mentioning another AI enqueues a single-depth reply', asy
   // The mention-triggered reply lands inside the same round (mode stays 'round').
   const mentionMessage = idle.messages.filter(m => m.senderId === idle.members.find(x => x.name === 'Bob').id).at(-1)
   assert.equal(mentionMessage.round, 1)
+  // Alice's @ message backfills the matched member id into mentionIds.
+  const aliceMsg = idle.messages.find(m => m.senderId === idle.members.find(x => x.name === 'Alice').id)
+  assert.ok(aliceMsg.mentionIds.length >= 1)
+  assert.ok(aliceMsg.mentionIds.includes(idle.members.find(x => x.name === 'Bob').id))
 })
 
 test('V2.3: AI @ depth limit stops chains (no infinite loop)', async () => {

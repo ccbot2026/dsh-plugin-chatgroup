@@ -115,6 +115,45 @@ const inputStyle: React.CSSProperties = {
 
 const labelStyle: React.CSSProperties = { fontSize: 12, color: '#4b5563', margin: '8px 0 3px' }
 
+/** Collapsible settings section. */
+const sectionStyle: React.CSSProperties = {
+  border: '1px solid #e2e5ea',
+  borderRadius: 8,
+  marginBottom: 8,
+  background: '#ffffff',
+  overflow: 'hidden',
+}
+
+const sectionSummaryStyle: React.CSSProperties = {
+  padding: '7px 10px',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+  background: '#f8fafc',
+  userSelect: 'none',
+}
+
+const sectionBodyStyle: React.CSSProperties = { padding: '8px 10px' }
+
+/** One config row: label (name + current value) above the input. */
+const fieldLabelStyle: React.CSSProperties = { fontSize: 11, color: '#6b7280', margin: '6px 0 2px' }
+const fieldHintStyle: React.CSSProperties = { fontSize: 11, color: '#9ca3af', marginLeft: 6 }
+
+/** Chinese descriptions for every runtime config key. */
+const CONFIG_LABELS: Record<string, { label: string; hint: string }> = {
+  maxAi: { label: 'AI 成员上限', hint: '1-5' },
+  maxGroups: { label: '群数量上限', hint: '一个会话最多几个群' },
+  defaultTimeoutMs: { label: '发言超时', hint: '毫秒，AI 单次发言超时' },
+  readonlyTools: { label: '只读工具', hint: '逗号分隔，AI 可用只读工具' },
+  waitTimeoutMs: { label: '长轮询超时', hint: '毫秒，面板等待更新上限' },
+  maxPromptMessages: { label: 'AI 可见消息数', hint: '0=全部' },
+  messagePageSize: { label: '每页消息数', hint: '快照尾页条数' },
+  maxEditableMessages: { label: '可编辑条数', hint: '最近 N 条可编辑/撤回，0=禁止' },
+  aiProactive: { label: 'AI 主动补充', hint: '轮结束后是否允许 AI 追加发言' },
+  maxProactivePerRound: { label: '每轮主动发言上限', hint: '每轮最多补充几条' },
+  maxAiMentionDepth: { label: 'AI 互@深度', hint: 'AI @ AI 的链路深度上限' },
+}
+
 function memberName(snapshot: ChatGroupSnapshot, memberId: string): string {
   if (memberId === 'user') return '用户'
   if (memberId === 'system') return '系统'
@@ -158,6 +197,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   const [editDraft, setEditDraft] = useState('')
   const [configForm, setConfigForm] = useState({
     maxAi: '5',
+    maxGroups: '2',
     defaultTimeoutMs: '300000',
     readonlyTools: 'read, read_image, glob, grep',
     waitTimeoutMs: '25000',
@@ -294,6 +334,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     configKeyRef.current = key
     setConfigForm({
       maxAi: String(group.config.maxAi),
+      maxGroups: String(group.config.maxGroups ?? 1),
       defaultTimeoutMs: String(group.config.defaultTimeoutMs),
       readonlyTools: group.config.readonlyTools.join(', '),
       waitTimeoutMs: String(group.config.waitTimeoutMs),
@@ -546,6 +587,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   async function saveConfig(): Promise<void> {
     if (sessionId === null || group === null) return
     const maxAi = Number(configForm.maxAi)
+    const maxGroups = Number(configForm.maxGroups)
     const defaultTimeoutMs = Number(configForm.defaultTimeoutMs)
     const waitTimeoutMs = Number(configForm.waitTimeoutMs)
     const maxPromptMessages = Number(configForm.maxPromptMessages)
@@ -555,7 +597,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     const maxAiMentionDepth = Number(configForm.maxAiMentionDepth)
     const readonlyTools = configForm.readonlyTools.split(',').map(tool => tool.trim()).filter(Boolean)
 
-    if (![maxAi, defaultTimeoutMs, waitTimeoutMs, maxPromptMessages, messagePageSize, maxEditableMessages, maxProactivePerRound, maxAiMentionDepth].every(Number.isSafeInteger)) {
+    if (![maxAi, maxGroups, defaultTimeoutMs, waitTimeoutMs, maxPromptMessages, messagePageSize, maxEditableMessages, maxProactivePerRound, maxAiMentionDepth].every(Number.isSafeInteger)) {
       setError('配置数值必须是整数')
       return
     }
@@ -566,6 +608,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
     const envelope = await run(signal => rpc.updateConfig(sessionId, {
       maxAi,
+      maxGroups,
       defaultTimeoutMs,
       readonlyTools,
       waitTimeoutMs,
@@ -870,77 +913,148 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   )
 
   const settings = group === null || !showSettings ? null : createElement('aside', { style: sidebarStyle },
-    createElement('div', { style: labelStyle }, '群名称'),
-    createElement('div', { style: { display: 'flex', gap: 6 } },
-      createElement('input', { style: inputStyle, placeholder: group.name ?? group.groupId, value: renameValue, onChange: event => setRenameValue(event.target.value) }),
-      createElement('button', { type: 'button', style: buttonStyle, disabled: busy || renameValue.trim().length === 0, onClick: () => { void renameGroup() } }, '重命名')),
-    createElement('div', { style: labelStyle }, '开启新议题'),
-    createElement('input', { style: inputStyle, placeholder: '新议题内容', value: topicTitle, onChange: event => setTopicTitle(event.target.value) }),
-    createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void startNewTopic() } }, '结束当前并开启新议题'),
-    createElement('div', { style: labelStyle }, '自动多轮讨论'),
-    createElement('div', { style: { display: 'grid', gridTemplateColumns: '70px 1fr', gap: 6, marginBottom: 8 } },
-      createElement('input', { style: inputStyle, value: autoForm.rounds, placeholder: '轮数', onChange: event => setAutoForm({ ...autoForm, rounds: event.target.value }) }),
-      createElement('input', { style: inputStyle, value: autoForm.topic, placeholder: '议题（可选，默认继续当前话题）', onChange: event => setAutoForm({ ...autoForm, topic: event.target.value }) }),
-    ),
-    createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running || aiMembers.length === 0, onClick: () => { void startAuto() } }, busy ? '处理中…' : '启动自动讨论'),
-    createElement('div', { style: { marginTop: 8, paddingTop: 8, borderTop: '1px solid #e2e5ea' } },
-      createElement('div', { style: labelStyle }, '群配置（仅当前群生效，idle 时可修改）'),
-      createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 } },
-        createElement('input', { style: inputStyle, placeholder: 'maxAi (1-5)', value: configForm.maxAi, onChange: event => setConfigForm({ ...configForm, maxAi: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'defaultTimeoutMs', value: configForm.defaultTimeoutMs, onChange: event => setConfigForm({ ...configForm, defaultTimeoutMs: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'waitTimeoutMs', value: configForm.waitTimeoutMs, onChange: event => setConfigForm({ ...configForm, waitTimeoutMs: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'maxPromptMessages (0=不限)', value: configForm.maxPromptMessages, onChange: event => setConfigForm({ ...configForm, maxPromptMessages: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'messagePageSize', value: configForm.messagePageSize, onChange: event => setConfigForm({ ...configForm, messagePageSize: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'maxEditableMessages', value: configForm.maxEditableMessages, onChange: event => setConfigForm({ ...configForm, maxEditableMessages: event.target.value }) }),
-        createElement('select', { style: inputStyle, value: configForm.aiProactive, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setConfigForm({ ...configForm, aiProactive: event.target.value }) },
-          createElement('option', { value: 'false' }, 'aiProactive: off'),
-          createElement('option', { value: 'true' }, 'aiProactive: on')),
-        createElement('input', { style: inputStyle, placeholder: 'maxProactivePerRound', value: configForm.maxProactivePerRound, onChange: event => setConfigForm({ ...configForm, maxProactivePerRound: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'maxAiMentionDepth', value: configForm.maxAiMentionDepth, onChange: event => setConfigForm({ ...configForm, maxAiMentionDepth: event.target.value }) }),
+
+    // ── 群信息 ──────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '群信息'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: { fontSize: 12, color: '#4b5563', marginBottom: 4 } },
+          `群 ID：${group.groupId}${group.name === undefined ? '' : ` · 名称：${group.name}`}`),
+        createElement('div', { style: { display: 'flex', gap: 6 } },
+          createElement('input', { style: inputStyle, placeholder: '输入新群名…', value: renameValue, onChange: event => setRenameValue(event.target.value) }),
+          createElement('button', { type: 'button', style: buttonStyle, disabled: busy || renameValue.trim().length === 0, onClick: () => { void renameGroup() } }, '重命名')),
       ),
-      createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'readonlyTools（逗号分隔）', value: configForm.readonlyTools, onChange: event => setConfigForm({ ...configForm, readonlyTools: event.target.value }) }),
-      createElement('button', { type: 'button', style: buttonStyle, disabled: busy || running, onClick: () => { void saveConfig() } }, '保存群配置'),
     ),
-    createElement('div', { style: labelStyle }, '添加 AI 成员'),
-    createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 } },
-      createElement('input', { style: inputStyle, placeholder: '名称', value: memberForm.name, onChange: event => setMemberForm({ ...memberForm, name: event.target.value }) }),
-      createElement('input', {
-        style: inputStyle,
-        placeholder: 'provider',
-        list: 'chatgroup-provider-list',
-        value: memberForm.provider,
-        onChange: event => setMemberForm({ ...memberForm, provider: event.target.value }),
-      }),
-      createElement('input', {
-        style: inputStyle,
-        placeholder: 'model',
-        list: 'chatgroup-model-list',
-        value: memberForm.model,
-        onChange: event => setMemberForm({ ...memberForm, model: event.target.value }),
-      }),
-      createElement('input', { style: inputStyle, placeholder: 'timeoutMs（默认已预填）', value: memberForm.timeout, onChange: event => setMemberForm({ ...memberForm, timeout: event.target.value }) }),
+
+    // ── 讨论控制 ────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '讨论控制'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: fieldLabelStyle }, '开启新议题（结束当前讨论）'),
+        createElement('div', { style: { display: 'flex', gap: 6 } },
+          createElement('input', { style: inputStyle, placeholder: '新议题内容', value: topicTitle, onChange: event => setTopicTitle(event.target.value) }),
+          createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void startNewTopic() } }, '开启新议题')),
+        createElement('div', { style: fieldLabelStyle }, '自动多轮讨论'),
+        createElement('div', { style: { display: 'flex', gap: 6, marginBottom: 6 } },
+          createElement('input', { style: { ...inputStyle, width: 64 }, value: autoForm.rounds, placeholder: '轮数', onChange: event => setAutoForm({ ...autoForm, rounds: event.target.value }) }),
+          createElement('input', { style: inputStyle, value: autoForm.topic, placeholder: '议题（可选）', onChange: event => setAutoForm({ ...autoForm, topic: event.target.value }) }),
+        ),
+        createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running || aiMembers.length === 0, onClick: () => { void startAuto() } }, busy ? '处理中…' : '启动自动讨论'),
+      ),
     ),
-    createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'systemPrompt（可选）', value: memberForm.systemPrompt, onChange: event => setMemberForm({ ...memberForm, systemPrompt: event.target.value }) }),
-    createElement('datalist', { id: 'chatgroup-provider-list' },
-      (catalog?.providers ?? []).map(provider => createElement('option', { key: provider.id, value: provider.id }, provider.name))),
-    createElement('datalist', { id: 'chatgroup-model-list' },
-      (selectedProvider?.models ?? []).map(model => createElement('option', { key: model, value: model }))),
-    createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running, onClick: () => { void addMember() } }, busy ? '处理中…' : '添加成员'),
-    aiMembers.length > 0 ? createElement(Fragment, null,
-      createElement('div', { style: labelStyle }, '成员'),
-      ...aiMembers.map(member => createElement('div', {
-        key: member.id,
-        style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 },
-      },
-        createElement('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' } }, `${member.name} · ${member.ai?.provider}/${member.ai?.model}`),
-        createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void removeMember(member.name) } }, '移除'))),
-      createElement('div', { style: labelStyle }, '发言顺序（用逗号分隔）'),
-      createElement('input', { style: inputStyle, value: orderText, onChange: event => setOrderText(event.target.value) }),
-      createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void saveOrder() } }, '保存顺序'),
-      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
-        createElement('span', { style: { fontSize: 13 } }, `@ 功能：${group.mentionEnabled ? '开启' : '关闭'}`),
-        createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void toggleMention() } }, group.mentionEnabled ? '关闭' : '开启')),
-    ) : null,
+
+    // ── 群配置 ──────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '群配置（仅当前群，空闲时可改）'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxAi.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxAi} · ${CONFIG_LABELS.maxAi.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxAi, onChange: event => setConfigForm({ ...configForm, maxAi: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxGroups.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxGroups} · ${CONFIG_LABELS.maxGroups.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxGroups, onChange: event => setConfigForm({ ...configForm, maxGroups: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.defaultTimeoutMs.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.defaultTimeoutMs} · ${CONFIG_LABELS.defaultTimeoutMs.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.defaultTimeoutMs, onChange: event => setConfigForm({ ...configForm, defaultTimeoutMs: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxPromptMessages.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxPromptMessages} · ${CONFIG_LABELS.maxPromptMessages.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxPromptMessages, onChange: event => setConfigForm({ ...configForm, maxPromptMessages: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxEditableMessages.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxEditableMessages} · ${CONFIG_LABELS.maxEditableMessages.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxEditableMessages, onChange: event => setConfigForm({ ...configForm, maxEditableMessages: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.waitTimeoutMs.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.waitTimeoutMs} · ${CONFIG_LABELS.waitTimeoutMs.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.waitTimeoutMs, onChange: event => setConfigForm({ ...configForm, waitTimeoutMs: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.messagePageSize.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.messagePageSize} · ${CONFIG_LABELS.messagePageSize.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.messagePageSize, onChange: event => setConfigForm({ ...configForm, messagePageSize: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.readonlyTools.label,
+          createElement('span', { style: fieldHintStyle }, CONFIG_LABELS.readonlyTools.hint)),
+        createElement('input', { style: inputStyle, value: configForm.readonlyTools, onChange: event => setConfigForm({ ...configForm, readonlyTools: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.aiProactive.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.aiProactive === 'true' ? '开' : '关'} · ${CONFIG_LABELS.aiProactive.hint}`)),
+        createElement('select', { style: inputStyle, value: configForm.aiProactive, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setConfigForm({ ...configForm, aiProactive: event.target.value }) },
+          createElement('option', { value: 'false' }, '关闭'),
+          createElement('option', { value: 'true' }, '开启')),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxProactivePerRound.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxProactivePerRound} · ${CONFIG_LABELS.maxProactivePerRound.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxProactivePerRound, onChange: event => setConfigForm({ ...configForm, maxProactivePerRound: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxAiMentionDepth.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxAiMentionDepth} · ${CONFIG_LABELS.maxAiMentionDepth.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxAiMentionDepth, onChange: event => setConfigForm({ ...configForm, maxAiMentionDepth: event.target.value }) }),
+
+        createElement('button', { type: 'button', style: buttonStyle, disabled: busy || running, onClick: () => { void saveConfig() } }, '保存群配置'),
+      ),
+    ),
+
+    // ── 成员管理 ────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '成员管理'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: fieldLabelStyle }, '添加 AI 成员'),
+        createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 } },
+          createElement('input', { style: inputStyle, placeholder: '名称', value: memberForm.name, onChange: event => setMemberForm({ ...memberForm, name: event.target.value }) }),
+          createElement('input', {
+            style: inputStyle,
+            placeholder: 'provider',
+            list: 'chatgroup-provider-list',
+            value: memberForm.provider,
+            onChange: event => setMemberForm({ ...memberForm, provider: event.target.value }),
+          }),
+          createElement('input', {
+            style: inputStyle,
+            placeholder: 'model',
+            list: 'chatgroup-model-list',
+            value: memberForm.model,
+            onChange: event => setMemberForm({ ...memberForm, model: event.target.value }),
+          }),
+          createElement('input', { style: inputStyle, placeholder: 'timeoutMs（默认已预填）', value: memberForm.timeout, onChange: event => setMemberForm({ ...memberForm, timeout: event.target.value }) }),
+        ),
+        createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'systemPrompt（可选）', value: memberForm.systemPrompt, onChange: event => setMemberForm({ ...memberForm, systemPrompt: event.target.value }) }),
+        createElement('datalist', { id: 'chatgroup-provider-list' },
+          (catalog?.providers ?? []).map(provider => createElement('option', { key: provider.id, value: provider.id }, provider.name))),
+        createElement('datalist', { id: 'chatgroup-model-list' },
+          (selectedProvider?.models ?? []).map(model => createElement('option', { key: model, value: model }))),
+        createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running, onClick: () => { void addMember() } }, busy ? '处理中…' : '添加成员'),
+
+        aiMembers.length > 0 ? createElement(Fragment, null,
+          createElement('div', { style: fieldLabelStyle }, '成员列表'),
+          ...aiMembers.map(member => createElement('div', {
+            key: member.id,
+            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 },
+          },
+            createElement('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' } }, `${member.name} · ${member.ai?.provider}/${member.ai?.model}`),
+            createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void removeMember(member.name) } }, '移除'))),
+          createElement('div', { style: fieldLabelStyle }, '发言顺序（用逗号分隔）'),
+          createElement('input', { style: inputStyle, value: orderText, onChange: event => setOrderText(event.target.value) }),
+          createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void saveOrder() } }, '保存顺序'),
+          createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
+            createElement('span', { style: { fontSize: 13 } }, `@ 功能：${group.mentionEnabled ? '开启' : '关闭'}`),
+            createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void toggleMention() } }, group.mentionEnabled ? '关闭' : '开启')),
+        ) : null,
+      ),
+    ),
   )
 
   const content = group === null

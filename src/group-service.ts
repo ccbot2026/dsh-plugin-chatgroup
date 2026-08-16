@@ -1176,6 +1176,7 @@ export class ChatGroupService {
   private appendFirstRoundInterruptSummary(group: InternalGroup): void {
     const spoke = group.messages.filter(message =>
       message.round === 1
+      && (message.topicId === undefined ? 'topic-1' : message.topicId) === group.currentTopicId
       && message.senderId !== USER_MEMBER_ID
       && message.senderId !== SYSTEM_MEMBER_ID
       && message.status === 'completed'
@@ -1511,6 +1512,13 @@ export class ChatGroupService {
       const name = candidate.name
       const pattern = new RegExp(`@${escapeRegExp(name)}\\b`)
       if (pattern.test(message.text)) targets.add(candidate.id)
+    }
+    // Backfill the matched member ids onto the message metadata (V2.3).
+    if (targets.size > 0 && message.mentionIds.length === 0) {
+      const enriched = { ...message, mentionIds: [...targets] }
+      group.messages = group.messages.map(candidate => candidate.id === message.id ? enriched : candidate)
+      this.bump(group)
+      this.persistMessage(group, enriched)
     }
     for (const targetId of targets) {
       const nextDepth = depth + 1
