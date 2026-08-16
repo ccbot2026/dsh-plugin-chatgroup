@@ -20,6 +20,7 @@ import {
   DEFAULT_READONLY_TOOLS,
   DEFAULT_SPEECH_TIMEOUT_MS,
   DEFAULT_WAIT_TIMEOUT_MS,
+  DEFAULT_MAX_EDITABLE_MESSAGES,
   SYSTEM_MEMBER_ID,
   USER_MEMBER_ID,
 } from './types.js'
@@ -81,6 +82,7 @@ export interface ChatGroupServiceConfig {
   readonly waitTimeoutMs?: number
   readonly maxPromptMessages?: number
   readonly messagePageSize?: number
+  readonly maxEditableMessages?: number
 }
 
 interface RevisionWaiter {
@@ -125,6 +127,10 @@ export class ChatGroupService {
     if (!Number.isSafeInteger(messagePageSize) || messagePageSize <= 0) {
       throw new Error('chatgroup: messagePageSize must be a positive integer')
     }
+    const maxEditableMessages = config.maxEditableMessages ?? DEFAULT_MAX_EDITABLE_MESSAGES
+    if (!Number.isSafeInteger(maxEditableMessages) || maxEditableMessages < 0) {
+      throw new Error('chatgroup: maxEditableMessages must be a non-negative integer (0 = no editing)')
+    }
     this.config = {
       maxAi,
       maxGroups,
@@ -133,6 +139,7 @@ export class ChatGroupService {
       waitTimeoutMs,
       maxPromptMessages,
       messagePageSize,
+      maxEditableMessages,
     }
   }
 
@@ -165,6 +172,7 @@ export class ChatGroupService {
       waitTimeoutMs: this.config.waitTimeoutMs,
       maxPromptMessages: this.config.maxPromptMessages,
       messagePageSize: this.config.messagePageSize,
+      maxEditableMessages: this.config.maxEditableMessages,
     }
   }
 
@@ -254,6 +262,7 @@ export class ChatGroupService {
         waitTimeoutMs: this.config.waitTimeoutMs,
         maxPromptMessages: this.config.maxPromptMessages,
         messagePageSize: this.config.messagePageSize,
+        maxEditableMessages: this.config.maxEditableMessages,
       },
     }
 
@@ -465,6 +474,7 @@ export class ChatGroupService {
       waitTimeoutMs: group.settings.waitTimeoutMs,
       maxPromptMessages: group.settings.maxPromptMessages,
       messagePageSize: group.settings.messagePageSize,
+      maxEditableMessages: group.settings.maxEditableMessages,
     }
   }
 
@@ -482,6 +492,7 @@ export class ChatGroupService {
       waitTimeoutMs: patch.waitTimeoutMs ?? group.settings.waitTimeoutMs,
       maxPromptMessages: patch.maxPromptMessages ?? group.settings.maxPromptMessages,
       messagePageSize: patch.messagePageSize ?? group.settings.messagePageSize,
+      maxEditableMessages: patch.maxEditableMessages ?? group.settings.maxEditableMessages,
     }
 
     if (!Number.isSafeInteger(next.maxAi) || next.maxAi < 1 || next.maxAi > 5) {
@@ -508,6 +519,9 @@ export class ChatGroupService {
     }
     if (!Number.isSafeInteger(next.messagePageSize) || next.messagePageSize <= 0) {
       throw new ChatGroupError('INVALID_ROUNDS', 'messagePageSize 必须是正整数')
+    }
+    if (!Number.isSafeInteger(next.maxEditableMessages) || next.maxEditableMessages < 0) {
+      throw new ChatGroupError('INVALID_ROUNDS', 'maxEditableMessages 必须是非负整数')
     }
 
     group.settings = next
@@ -662,6 +676,72 @@ export class ChatGroupService {
     group.currentController?.abort(new Error('group round stopped'))
     this.bump(group)
     return this.snapshotOf(group)
+  }
+
+  // ── message edit / withdraw (V2.2) ───────────────────────────────────────
+
+  /**
+   * Edit one message's visible text. Only the human admin may edit, only
+   * non-speech messages that are not withdrawn, and only within the newest
+   * `maxEditableMessages` by seq. The original text is preserved for audit.
+   */
+  editMessage(agent: Agent, seq: number, text: string, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
+    const normalized = text.trim()
+    if (normalized.length === 0) {
+      throw new ChatGroupError('INVALID_TEXT', '编辑内容不能为空')
+    }
+    const target = this.findEditableMessage(group, seq, '编辑')
+    group.messages = group.messages.map(candidate => candidate.id === target.id
+      ? {
+        ...candidate,
+        editedText: normalized,
+        editedAt: Date.now(),
+      }
+      : candidate)
+    this.bump(group)
+    this.persistState(group)
+    return this.snapshotOf(group)
+  }
+
+  /** Withdraw one message: it vanishes from every future AI prompt. */
+  withdrawMessage(agent: Agent, seq: number, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
+    const target = this.findEditableMessage(group, seq, '撤回')
+    group.messages = group.messages.map(candidate => candidate.id === target.id
+      ? { ...candidate, status: 'withdrawn' as const }
+      : candidate)
+    this.bump(group)
+    this.persistState(group)
+    return this.snapshotOf(group)
+  }
+
+  /** Resolve an editable message: exists, not speaking, not withdrawn, within the editable window. */
+  private findEditableMessage(group: InternalGroup, seq: number, verb: string): ChatGroupMessage {
+    if (!Number.isSafeInteger(seq) || seq < 0) {
+      throw new ChatGroupError('INVALID_TEXT', `${verb}目标 seq 必须是正整数`)
+    }
+    const target = group.messages.find(message => message.seq === seq)
+    if (target === undefined) {
+      throw new ChatGroupError('MESSAGE_NOT_FOUND', `找不到 seq=${String(seq)} 的消息`)
+    }
+    if (target.status === 'speaking') {
+      throw new ChatGroupError('MESSAGE_NOT_EDITABLE', '发言中的消息不能编辑或撤回')
+    }
+    if (target.status === 'withdrawn') {
+      throw new ChatGroupError('MESSAGE_NOT_EDITABLE', '已撤回的消息不能再次编辑或撤回')
+    }
+    const windowSize = group.settings.maxEditableMessages
+    if (windowSize > 0) {
+      const newestSeq = group.messages.reduce((max, message) => Math.max(max, message.seq), -1)
+      if (seq < newestSeq - windowSize + 1) {
+        throw new ChatGroupError(
+          'MESSAGE_NOT_EDITABLE',
+          `只能${verb}最近 ${String(windowSize)} 条消息（seq > ${String(newestSeq - windowSize)}）`,
+        )
+      }
+    }
+    return target
   }
 
   /** Resolve when the group state changes past `revision`, or after `timeoutMs`. */
@@ -857,6 +937,7 @@ export class ChatGroupService {
         waitTimeoutMs: this.config.waitTimeoutMs,
         maxPromptMessages: this.config.maxPromptMessages,
         messagePageSize: this.config.messagePageSize,
+        maxEditableMessages: this.config.maxEditableMessages,
       },
     }
 
@@ -1323,6 +1404,7 @@ export class ChatGroupService {
         waitTimeoutMs: group.settings.waitTimeoutMs,
         maxPromptMessages: group.settings.maxPromptMessages,
         messagePageSize: group.settings.messagePageSize,
+        maxEditableMessages: group.settings.maxEditableMessages,
       },
       ...group.autoActive ? {
         autoTotalRounds: group.autoTotalRounds,

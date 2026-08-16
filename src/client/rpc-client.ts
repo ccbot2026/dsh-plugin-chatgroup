@@ -92,6 +92,14 @@ export class ChatGroupRpcClient {
     return call(this.rpc, 'stop', { sessionId, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
+  editMessage(sessionId: string, seq: number, text: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'messages.edit', { sessionId, seq, text, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
+  withdrawMessage(sessionId: string, seq: number, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'messages.withdraw', { sessionId, seq, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
   listGroups(sessionId: string, signal?: AbortSignal): Promise<{ groups: ChatGroupSummary[] }> {
     return call(this.rpc, 'groups.list', { sessionId }, signal)
   }

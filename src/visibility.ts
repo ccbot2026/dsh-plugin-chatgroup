@@ -17,6 +17,8 @@ export function buildVisibleMessages(
     if (message.topicId !== undefined && message.topicId !== topicId) return false
     // The in-flight placeholder is never part of the transcript.
     if (message.status === 'speaking') return false
+    // Withdrawn messages vanish from every prompt (V2.2).
+    if (message.status === 'withdrawn') return false
     if (message.senderId === USER_MEMBER_ID || message.senderId === SYSTEM_MEMBER_ID) return true
     if (message.senderId === targetMemberId) return true
     return !blind
@@ -105,7 +107,11 @@ export function buildMemberPrompt(
   for (const message of transcript) {
     const sender = senderName(group, message.senderId)
     if (message.status === 'completed' || message.status === 'sent') {
-      lines.push(`[${sender}]: ${message.text}`)
+      if (message.editedText !== undefined) {
+        lines.push(`[${sender}]（已编辑）: ${message.editedText}`)
+      } else {
+        lines.push(`[${sender}]: ${message.text}`)
+      }
       continue
     }
     if (message.senderId !== USER_MEMBER_ID) {

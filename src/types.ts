@@ -10,6 +10,7 @@ export const DEFAULT_SPEECH_TIMEOUT_MS = 300_000
 export const DEFAULT_WAIT_TIMEOUT_MS = 25_000
 export const DEFAULT_MAX_PROMPT_MESSAGES = 40
 export const DEFAULT_MESSAGE_PAGE_SIZE = 100
+export const DEFAULT_MAX_EDITABLE_MESSAGES = 20
 export const DEFAULT_READONLY_TOOLS = ['read', 'read_image', 'glob', 'grep'] as const
 
 export type GroupId = string
@@ -24,6 +25,7 @@ export type MessageStatus =
   | 'failed'
   | 'timeout'
   | 'cancelled'
+  | 'withdrawn'
 
 export interface AiMemberConfig {
   readonly provider: string
@@ -70,6 +72,10 @@ export interface ChatGroupMessage {
   readonly error?: string
   readonly createdAt: number
   readonly completedAt?: number
+  /** Set when the message was edited; keeps the original text for audit. */
+  readonly editedAt?: number
+  /** The text as last edited; `text` keeps the original. */
+  readonly editedText?: string
 }
 
 export interface ChatGroupSnapshot {
@@ -131,4 +137,6 @@ export interface ChatGroupConfig {
   readonly maxPromptMessages: number
   /** Number of tail messages returned in each RPC snapshot page. */
   readonly messagePageSize: number
+  /** Newest N messages (by seq) may be edited/withdrawn by the admin. */
+  readonly maxEditableMessages: number
 }

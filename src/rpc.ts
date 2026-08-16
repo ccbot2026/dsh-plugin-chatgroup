@@ -145,6 +145,25 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
+        case 'messages.edit': {
+          const seq = rawPayload.seq
+          const text = stringField(rawPayload, 'text') ?? ''
+          if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) {
+            return fail('BAD_REQUEST', 'seq must be a non-negative integer')
+          }
+          const snapshot = service.editMessage(agent, seq, text, groupIdField(rawPayload))
+          return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
+        }
+
+        case 'messages.withdraw': {
+          const seq = rawPayload.seq
+          if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) {
+            return fail('BAD_REQUEST', 'seq must be a non-negative integer')
+          }
+          const snapshot = service.withdrawMessage(agent, seq, groupIdField(rawPayload))
+          return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
+        }
+
         case 'groups.list': {
           const snapshot = service.requireSnapshot(agent)
           return ok({ groups: snapshot.groups })

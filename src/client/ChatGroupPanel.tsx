@@ -129,6 +129,7 @@ function statusLabel(status: string, statusOnly = false): string {
     case 'failed': return '失败'
     case 'timeout': return '超时'
     case 'cancelled': return '已取消'
+    case 'withdrawn': return '已撤回'
     default: return status
   }
 }
@@ -153,6 +154,8 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   const [topicFilter, setTopicFilter] = useState<string>('all')
   const [filteredTopicMessages, setFilteredTopicMessages] = useState<ChatGroupMessage[]>([])
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const [editingSeq, setEditingSeq] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
   const [configForm, setConfigForm] = useState({
     maxAi: '5',
     defaultTimeoutMs: '300000',
@@ -578,6 +581,32 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     }
   }
 
+  function beginEdit(message: ChatGroupMessage): void {
+    setEditingSeq(message.seq)
+    setEditDraft(message.editedText ?? message.text)
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (sessionId === null || editingSeq === null || editDraft.trim().length === 0) return
+    const envelope = await run(signal => rpc.editMessage(sessionId, editingSeq, editDraft, groupId === '' ? undefined : groupId, signal))
+    if (envelope === undefined) return
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+    setEditingSeq(null)
+    setEditDraft('')
+  }
+
+  async function withdrawMessage(message: ChatGroupMessage): Promise<void> {
+    if (sessionId === null) return
+    if (typeof window !== 'undefined' && !window.confirm(`撤回该消息？\n${message.text.slice(0, 80)}`)) return
+    const envelope = await run(signal => rpc.withdrawMessage(sessionId, message.seq, groupId === '' ? undefined : groupId, signal))
+    if (envelope === undefined) return
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+  }
+
   async function startNewTopic(): Promise<void> {
     if (sessionId === null) return
     const title = topicTitle.trim()
@@ -698,6 +727,8 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
     const own = message.senderId === 'user'
     const system = message.senderId === 'system'
+    const withdrawn = message.status === 'withdrawn'
+    const editable = !system && !withdrawn && message.status !== 'speaking' && message.text.length > 0
     nodes.push(createElement('div', {
       key: message.id,
       style: {
@@ -714,15 +745,41 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     },
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, opacity: 0.85, marginBottom: 3 } },
         createElement('span', { style: { flex: 1 } },
-          `${memberName(group, message.senderId)} · R${message.round} · ${statusLabel(message.status, true)} · ${formatTime(message.createdAt)}${message.writeAccess === true ? ' · 临时写权限' : ''}`),
+          `${memberName(group, message.senderId)} · R${message.round} · ${statusLabel(message.status, true)} · ${formatTime(message.createdAt)}${message.writeAccess === true ? ' · 临时写权限' : ''}${message.editedAt !== undefined ? ' · 已编辑' : ''}`),
         message.senderId === 'system' || message.status === 'speaking' || message.text.length === 0
           ? null
           : createElement('button', {
             type: 'button',
             style: { ...buttonStyle, padding: '1px 6px', fontSize: 11 },
             onClick: () => { void copyMessage(message) },
-          }, copiedMessageId === message.id ? '已复制' : '复制')),
-      message.status === 'speaking' && message.text.length === 0 ? '正在输入…' : message.text,
+          }, copiedMessageId === message.id ? '已复制' : '复制'),
+        editable
+          ? createElement('button', {
+            type: 'button',
+            style: { ...buttonStyle, padding: '1px 6px', fontSize: 11 },
+            onClick: () => beginEdit(message),
+          }, '编辑')
+          : null,
+        editable
+          ? createElement('button', {
+            type: 'button',
+            style: { ...buttonStyle, padding: '1px 6px', fontSize: 11, color: '#b91c1c' },
+            onClick: () => { void withdrawMessage(message) },
+          }, '撤回')
+          : null),
+      withdrawn
+        ? createElement('span', { style: { fontStyle: 'italic', opacity: 0.6 } }, '（已撤回）')
+        : editingSeq === message.seq
+          ? createElement('div', null,
+            createElement('textarea', {
+              style: { ...inputStyle, marginBottom: 6, minHeight: 40 },
+              value: editDraft,
+              onChange: (event: ReactChangeEvent<HTMLTextAreaElement>) => setEditDraft(event.target.value),
+            }),
+            createElement('div', { style: { display: 'flex', gap: 6 } },
+              createElement('button', { type: 'button', style: { ...buttonStyle, ...primaryButtonStyle }, disabled: editDraft.trim().length === 0, onClick: () => { void saveEdit() } }, '保存'),
+              createElement('button', { type: 'button', style: buttonStyle, onClick: () => { setEditingSeq(null); setEditDraft('') } }, '取消')))
+          : message.status === 'speaking' && message.text.length === 0 ? '正在输入…' : (message.editedText ?? message.text),
       message.error === undefined ? null : createElement('div', { style: { fontSize: 11, opacity: 0.7, marginTop: 4 } }, message.error),
     ))
     return nodes
