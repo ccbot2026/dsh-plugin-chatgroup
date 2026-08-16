@@ -192,11 +192,16 @@ function formatGroupList(snapshot: ChatGroupSnapshot): string {
 function formatConfig(config: import('./types.js').ChatGroupConfig): string {
   return [
     `maxAi: ${String(config.maxAi)}`,
+    `maxGroups: ${String(config.maxGroups)}`,
     `defaultTimeoutMs: ${String(config.defaultTimeoutMs)}`,
     `readonlyTools: ${config.readonlyTools.join(', ')}`,
     `waitTimeoutMs: ${String(config.waitTimeoutMs)}`,
     `maxPromptMessages: ${String(config.maxPromptMessages)}`,
     `messagePageSize: ${String(config.messagePageSize)}`,
+    `maxEditableMessages: ${String(config.maxEditableMessages)}`,
+    `aiProactive: ${String(config.aiProactive)}`,
+    `maxProactivePerRound: ${String(config.maxProactivePerRound)}`,
+    `maxAiMentionDepth: ${String(config.maxAiMentionDepth)}`,
   ].join('\n')
 }
 
