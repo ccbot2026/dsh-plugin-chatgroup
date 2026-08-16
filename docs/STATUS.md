@@ -2,6 +2,7 @@
 
 > 完整阶段总结：`docs/阶段总结-v0.2.0.md`（V1）
 > V2 变更：`CHANGELOG.md`（2.0.0 章节）
+> V2 计划外增量：`docs/v2增量需求记录.md`
 > 实施计划：`docs/plan.md`
 
 - 项目：dsh-plugin-chatgroup v2.0.0
