@@ -1395,6 +1395,13 @@ export class ChatGroupService {
           }
           this.bump(group)
         },
+        (usage) => {
+          if (group.destroyed || !this.isLive(group) || message === undefined) return
+          group.messages = group.messages.map(candidate => candidate.id === message.id
+            ? { ...candidate, usage: { ...usage } }
+            : candidate)
+          this.bump(group)
+        },
       )
 
       clearTimeout(timer)
@@ -1665,6 +1672,7 @@ export class ChatGroupService {
       } : {},
       ...group.currentSpeakerId === undefined ? {} : { currentSpeakerId: group.currentSpeakerId },
       ...group.toolActivity === undefined ? {} : { toolActivity: { ...group.toolActivity } },
+      memberUsage: this.memberUsageOf(group),
       nextSpeakerIds,
       soloQueue: [...group.soloQueue],
       groups: this.groupSummaries(group.sessionId),
@@ -1687,6 +1695,29 @@ export class ChatGroupService {
           currentTopicTitle: topic?.title ?? '默认话题',
         }
       })
+  }
+
+  /** V2.6: cumulative token usage per AI member across the group's messages. */
+  private memberUsageOf(group: InternalGroup): Record<string, import('./types.js').MessageUsage> {
+    const usage: Record<string, import('./types.js').MessageUsage> = {}
+    for (const message of group.messages) {
+      if (message.usage === undefined || message.senderId === USER_MEMBER_ID || message.senderId === SYSTEM_MEMBER_ID) continue
+      const current = usage[message.senderId]
+      usage[message.senderId] = {
+        inputTokens: (current?.inputTokens ?? 0) + message.usage.inputTokens,
+        outputTokens: (current?.outputTokens ?? 0) + message.usage.outputTokens,
+        ...message.usage.cacheReadTokens !== undefined || current?.cacheReadTokens !== undefined
+          ? { cacheReadTokens: (current?.cacheReadTokens ?? 0) + (message.usage.cacheReadTokens ?? 0) }
+          : {},
+        ...message.usage.cacheWriteTokens !== undefined || current?.cacheWriteTokens !== undefined
+          ? { cacheWriteTokens: (current?.cacheWriteTokens ?? 0) + (message.usage.cacheWriteTokens ?? 0) }
+          : {},
+        ...message.usage.reasoningTokens !== undefined || current?.reasoningTokens !== undefined
+          ? { reasoningTokens: (current?.reasoningTokens ?? 0) + (message.usage.reasoningTokens ?? 0) }
+          : {},
+      }
+    }
+    return usage
   }
 
   private cancelWaiters(sessionId: SessionId, groupId: GroupId, changed: boolean): void {

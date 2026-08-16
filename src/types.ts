@@ -83,6 +83,17 @@ export interface ChatGroupMessage {
   readonly editedAt?: number
   /** The text as last edited; `text` keeps the original. */
   readonly editedText?: string
+  /** V2.6: token usage of the AI utterance that produced this message. */
+  readonly usage?: MessageUsage
+}
+
+/** Token accounting for one AI utterance (V2.6). */
+export interface MessageUsage {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens?: number
+  readonly cacheWriteTokens?: number
+  readonly reasoningTokens?: number
 }
 
 export interface ChatGroupSnapshot {
@@ -107,6 +118,8 @@ export interface ChatGroupSnapshot {
   readonly currentSpeakerId?: string
   /** V2.5: live read-only tool activity of the current speaker. */
   readonly toolActivity?: { memberId: string; tool: string; argsPreview: string; active: boolean }
+  /** V2.6: per-AI-member cumulative token usage across the session. */
+  readonly memberUsage: Record<string, MessageUsage>
   readonly nextSpeakerIds: readonly string[]
   readonly soloQueue: readonly SoloRequest[]
   readonly autoActive: boolean

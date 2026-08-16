@@ -173,6 +173,23 @@ function statusLabel(status: string, statusOnly = false): string {
   }
 }
 
+/** V2.6: render one member's cumulative usage line. */
+function memberUsageText(usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number } | undefined): string {
+  if (usage === undefined) return ''
+  const input = usage.inputTokens
+  const cache = usage.cacheReadTokens ?? 0
+  const totalInput = input + cache
+  const cacheHit = totalInput > 0 ? Math.round((cache / totalInput) * 100) : 0
+  const parts = [`输入 ${formatTok(input + cache)}`, `输出 ${formatTok(usage.outputTokens)}`]
+  if (cache > 0) parts.push(`缓存 ${String(cacheHit)}%`)
+  return parts.join(' · ')
+}
+
+function formatTok(value: number): string {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return String(value)
+}
+
 export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelProps) {
   const sessionId = useSyncExternalStore(controller.subscribe, controller.getSessionId)
   const currentSessionId = useSessions(state => state.current)
@@ -1044,7 +1061,13 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
             key: member.id,
             style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 },
           },
-            createElement('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' } }, `${member.name} · ${member.ai?.provider}/${member.ai?.model}`),
+            createElement('div', { style: { flex: 1, minWidth: 0, overflow: 'hidden' } },
+              createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                `${member.name} · ${member.ai?.provider}/${member.ai?.model}`),
+              group.memberUsage?.[member.id] === undefined
+                ? null
+                : createElement('div', { style: { fontSize: 10, color: '#6b7280', marginTop: 1 } },
+                  memberUsageText(group.memberUsage[member.id]))),
             createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void removeMember(member.name) } }, '移除'))),
           createElement('div', { style: fieldLabelStyle }, '发言顺序（用逗号分隔）'),
           createElement('input', { style: inputStyle, value: orderText, onChange: event => setOrderText(event.target.value) }),
