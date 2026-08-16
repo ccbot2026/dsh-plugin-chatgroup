@@ -7,8 +7,9 @@
 > V2 计划外增量：`docs/v0.3增量需求记录.md`
 > 实施计划：`docs/plan.md`
 
-- 项目：dsh-plugin-chatgroup v0.4.1
+- 项目：dsh-plugin-chatgroup v0.4.1（已合并 main）
 - 测试：57/57 通过（0.4.x 阶段）
+- 打包：npm pack 生成 dsh-plugin-chatgroup-0.4.1.tgz（24 文件 52KB，冒烟安装通过）
 - 持久化：`<项目>/.dsh/chatgroup/<sessionId>-<groupId>.jsonl`（v2；v1 自动迁移为 `group-1`）
 - 安装：`dsh plugin --profile web add /path/to/dsh-plugin-chatgroup`
 - 启动：`dsh --profile dsh-chatgroup --port 3081`
