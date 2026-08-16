@@ -5,7 +5,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 export const USER_MEMBER_ID = 'user'
 export const SYSTEM_MEMBER_ID = 'system'
 export const DEFAULT_MAX_AI = 5
-export const DEFAULT_MAX_GROUPS = 2
+/** Default concurrent-group cap per session; panel/config can raise it. */
+export const DEFAULT_MAX_GROUPS = 1
 export const DEFAULT_SPEECH_TIMEOUT_MS = 300_000
 export const DEFAULT_WAIT_TIMEOUT_MS = 25_000
 export const DEFAULT_MAX_PROMPT_MESSAGES = 40

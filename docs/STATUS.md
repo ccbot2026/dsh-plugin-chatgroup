@@ -24,7 +24,7 @@
 
 ### V2（0.3.0）
 
-- **多群**：一会话多群（maxGroups 默认 1）、`/group list|use`、面板群选择器、v1→v2 迁移
+- **多群**：一会话多群（maxGroups 默认 1，面板可调且对 create 生效）、`/group list|use`、面板群选择器、v1→v2 迁移
 - **消息编辑/撤回**：`/group edit|withdraw`、面板行内编辑、撤回不进 prompt、原文审计保留
 - **AI 主动发言**：`aiProactive` + 每轮上限；AI 互 @（深度限制 + 防循环）
 - **首轮中断摘要**：系统消息汇总已产生发言
