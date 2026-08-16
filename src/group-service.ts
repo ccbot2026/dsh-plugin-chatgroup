@@ -1373,7 +1373,10 @@ export class ChatGroupService {
       const persona = buildMemberPersona(member)
       const prompt = intent === 'proactive'
         ? this.buildProactivePrompt(snapshot, member, group.settings.maxPromptMessages)
-        : buildMemberPrompt(snapshot, member, group.settings.maxPromptMessages, { writeAccess })
+        : buildMemberPrompt(snapshot, member, group.settings.maxPromptMessages, {
+          writeAccess,
+          ...intent === 'mention' ? { intent: 'mention' as const, mentionTargetName: undefined } : {},
+        })
 
       outcome = await speakOnce(
         this.ctx,
@@ -1474,14 +1477,7 @@ export class ChatGroupService {
     member: ChatGroupMember,
     maxPromptMessages: number,
   ): string {
-    const base = buildMemberPrompt(group, member, maxPromptMessages)
-    return [
-      base,
-      '',
-      '本轮讨论已经结束。如果你认为有必须补充的关键信息或不同观点，请直接输出补充内容；',
-      '如果无需补充，请只输出“无需补充”四个字。',
-      '如果你要 @ 其他成员，请用 @成员名 的形式写在补充内容中。',
-    ].join('\n')
+    return buildMemberPrompt(group, member, maxPromptMessages, { intent: 'proactive' })
   }
 
   /** V2.3: handle a proactive consult result — append a remark or record a decline. */

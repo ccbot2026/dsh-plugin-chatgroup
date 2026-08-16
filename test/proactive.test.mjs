@@ -16,7 +16,7 @@ function makeService(config = {}, { proactive = {}, round = {} } = {}) {
         calls.push(request)
         const promptText = request.prompt[0].text
         const name = /你是群聊成员“([^”]+)”/.exec(promptText)?.[1] ?? 'AI'
-        const isProactive = promptText.includes('本轮讨论已经结束')
+        const isProactive = promptText.includes('本轮讨论结束后的补充机会')
         const text = isProactive
           ? (proactive[name] ?? '无需补充')
           : (round[name] ?? `reply from ${name}`)
@@ -79,7 +79,7 @@ test('V2.3: proactive adds one remark per AI after a clean round', async () => {
   const proactiveTexts = idle.messages.filter(m => m.text.includes('proactive')).map(m => m.text)
   assert.deepEqual(proactiveTexts.sort(), ['Alice:proactive-A', 'Bob:proactive-B'])
   // The proactive consult prompts explicitly ask for a remark.
-  const proactivePrompt = calls.find(c => /本轮讨论已经结束/.test(c.prompt[0].text))
+  const proactivePrompt = calls.find(c => c.prompt[0].text.includes('本轮讨论结束后的补充机会'))
   assert.ok(proactivePrompt)
 })
 
@@ -155,4 +155,24 @@ test('V2.3: AI @ depth limit stops chains (no infinite loop)', async () => {
   // System notes record the dropped mentions.
   const dropped = idle.messages.filter(m => m.senderId === 'system' && m.text.includes('深度已达上限'))
   assert.equal(dropped.length, 2)
+})
+
+test('V0.4.0: prompt tuning adds blind-round note and @-format guidance', async () => {
+  const { service, calls } = makeService({ aiProactive: false }, {
+    round: { Alice: '普通回复' },
+  })
+  const agent = makeAgent()
+  service.create(agent)
+  service.addMember(agent, { name: 'Alice', provider: 'deepseek', model: 'chat' })
+  service.addMember(agent, { name: 'Bob', provider: 'deepseek', model: 'chat' })
+  service.send(agent, '议题')
+  await waitIdle(service, agent)
+
+  const alicePrompt = calls.find(c => /你是群聊成员“Alice”/.test(c.prompt[0].text))?.prompt[0].text ?? ''
+  // Blind round (round 1): the prompt tells Alice she cannot see others.
+  assert.ok(alicePrompt.includes('盲发'))
+  // @-format guidance mentions Bob.
+  assert.ok(alicePrompt.includes('@Bob'))
+  // Focus guidance present.
+  assert.ok(alicePrompt.includes('保持简洁聚焦'))
 })
