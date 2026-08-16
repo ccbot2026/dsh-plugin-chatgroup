@@ -1,12 +1,12 @@
 # dsh-plugin-chatgroup
 
-DeepSeek Harness (dsh) 群聊插件：在当前 dsh 会话中创建由 1 个人类用户和多个 AI 成员组成的讨论群（v2.0.0，支持多群）。
+DeepSeek Harness (dsh) 群聊插件：在当前 dsh 会话中创建由 1 个人类用户和多个 AI 成员组成的讨论群（v0.3.0，支持多群）。
 
 详细需求与技术方案见 [`docs/chatgroup-prd-tech-design.md`](docs/chatgroup-prd-tech-design.md)；阶段总结见 [`docs/阶段总结-v0.2.0.md`](docs/阶段总结-v0.2.0.md)；V2 变更见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 当前进度
 
-- [x] V2.6：v2.0.0 发布（多群 / 消息编辑撤回 / AI 主动发言 / 首轮中断摘要 / 群重命名 / 工具活动提示，51/51 测试通过）。
+- [x] V2.6：v0.3.0 发布（多群 / 消息编辑撤回 / AI 主动发言 / 首轮中断摘要 / 群重命名 / 工具活动提示，51/51 测试通过）。
 - [x] V2.1：多群支持（`maxGroups` 默认 1 兼容旧行为；`/group list|use`；持久化 v2 + v1 迁移；面板群选择器）。
 - [x] V2.2：消息编辑/撤回（`/group edit|withdraw`、行内编辑、撤回不进 prompt、原文审计）。
 - [x] V2.3：AI 主动发言（`aiProactive`）与 AI 互 @（深度限制防循环）。
