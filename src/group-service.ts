@@ -5,13 +5,16 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { speakOnce } from './ai-speaker.js'
 import {
   appendPersistedRecord,
+  listPersistedGroupIds,
   readPersistedRecords,
+  removeAllPersistedLogs,
   removePersistedLog,
   type PersistedRecord,
 } from './persistence.js'
 import { ChatGroupError } from './errors.js'
 import {
   DEFAULT_MAX_AI,
+  DEFAULT_MAX_GROUPS,
   DEFAULT_MAX_PROMPT_MESSAGES,
   DEFAULT_MESSAGE_PAGE_SIZE,
   DEFAULT_READONLY_TOOLS,
@@ -26,8 +29,10 @@ import type {
   ChatGroupMember,
   ChatGroupMessage,
   ChatGroupSnapshot,
+  ChatGroupSummary,
   ChatTopic,
   CreateAiMemberInput,
+  GroupId,
   SoloRequest,
   GroupStatus,
   MessageStatus,
@@ -70,6 +75,7 @@ interface InternalGroup {
 
 export interface ChatGroupServiceConfig {
   readonly maxAi?: number
+  readonly maxGroups?: number
   readonly defaultTimeoutMs?: number
   readonly readonlyTools?: readonly string[]
   readonly waitTimeoutMs?: number
@@ -85,14 +91,19 @@ interface RevisionWaiter {
 }
 
 export class ChatGroupService {
-  private readonly groups = new Map<SessionId, InternalGroup>()
-  private readonly waiters = new Map<SessionId, Set<RevisionWaiter>>()
+  private readonly groups = new Map<SessionId, Map<GroupId, InternalGroup>>()
+  private readonly waiters = new Map<string, Set<RevisionWaiter>>()
+  private readonly currentGroupId = new Map<SessionId, GroupId>()
   private readonly config: ChatGroupConfig
 
   constructor(private readonly ctx: Context, config: ChatGroupServiceConfig = {}) {
     const maxAi = config.maxAi ?? DEFAULT_MAX_AI
     if (!Number.isSafeInteger(maxAi) || maxAi <= 0) {
       throw new Error('chatgroup: maxAi must be a positive integer')
+    }
+    const maxGroups = config.maxGroups ?? DEFAULT_MAX_GROUPS
+    if (!Number.isSafeInteger(maxGroups) || maxGroups <= 0) {
+      throw new Error('chatgroup: maxGroups must be a positive integer')
     }
     const defaultTimeoutMs = config.defaultTimeoutMs ?? DEFAULT_SPEECH_TIMEOUT_MS
     if (!Number.isSafeInteger(defaultTimeoutMs) || defaultTimeoutMs <= 0) {
@@ -116,6 +127,7 @@ export class ChatGroupService {
     }
     this.config = {
       maxAi,
+      maxGroups,
       defaultTimeoutMs,
       readonlyTools,
       waitTimeoutMs,
@@ -140,9 +152,14 @@ export class ChatGroupService {
     return this.config.messagePageSize
   }
 
+  get maxGroups(): number {
+    return this.config.maxGroups
+  }
+
   configView(): ChatGroupConfig {
     return {
       maxAi: this.config.maxAi,
+      maxGroups: this.config.maxGroups,
       defaultTimeoutMs: this.config.defaultTimeoutMs,
       readonlyTools: [...this.config.readonlyTools],
       waitTimeoutMs: this.config.waitTimeoutMs,
@@ -151,8 +168,8 @@ export class ChatGroupService {
     }
   }
 
-  topicMessages(sessionId: SessionId, topicId: string): ChatGroupMessage[] | null {
-    const group = this.groups.get(sessionId)
+  topicMessages(sessionId: SessionId, topicId: string, groupId?: GroupId): ChatGroupMessage[] | null {
+    const group = this.requireGroupById(sessionId, groupId)
     if (group === undefined) return null
     return group.messages.filter(message =>
       topicId === 'topic-1'
@@ -164,8 +181,9 @@ export class ChatGroupService {
     sessionId: SessionId,
     beforeSeq: number,
     limit = this.config.messagePageSize,
+    groupId?: GroupId,
   ): { messages: readonly ChatGroupMessage[]; hasMore: boolean; oldestLoadedSeq?: number } | null {
-    const group = this.groups.get(sessionId)
+    const group = this.requireGroupById(sessionId, groupId)
     if (group === undefined) return null
     const pageSize = Math.max(1, Math.min(limit, group.settings.messagePageSize * 4))
     const end = Math.min(beforeSeq, group.messages.length)
@@ -182,13 +200,18 @@ export class ChatGroupService {
 
   create(agent: Agent): ChatGroupSnapshot {
     const sessionId = agent.session.id
-    const restored = this.ensureLoaded(agent)
-    if (restored !== undefined) {
-      throw new ChatGroupError('GROUP_EXISTS', '当前会话已经有一个群聊（已从磁盘恢复）')
+    this.ensureLoaded(agent)
+    const sessionGroups = this.groups.get(sessionId)
+    const groupCount = sessionGroups?.size ?? 0
+    if (groupCount >= this.config.maxGroups) {
+      throw new ChatGroupError(
+        'GROUP_LIMIT_EXCEEDED',
+        `当前会话最多 ${String(this.config.maxGroups)} 个群（maxGroups 可配置）`,
+      )
     }
 
     const group: InternalGroup = {
-      id: `chatgroup-${randomUUID()}`,
+      id: `group-${String(groupCount + 1)}`,
       sessionId,
       ...agent.session.header?.cwd === undefined ? {} : { cwd: agent.session.header?.cwd },
       revision: 0,
@@ -225,6 +248,7 @@ export class ChatGroupService {
       }],
       settings: {
         maxAi: this.config.maxAi,
+        maxGroups: this.config.maxGroups,
         defaultTimeoutMs: this.config.defaultTimeoutMs,
         readonlyTools: [...this.config.readonlyTools],
         waitTimeoutMs: this.config.waitTimeoutMs,
@@ -233,15 +257,18 @@ export class ChatGroupService {
       },
     }
 
-    this.groups.set(sessionId, group)
+    let sessionGroupsMap = this.groups.get(sessionId)
+    if (sessionGroupsMap === undefined) this.groups.set(sessionId, sessionGroupsMap = new Map())
+    sessionGroupsMap.set(group.id, group)
+    this.currentGroupId.set(sessionId, group.id)
     this.bump(group)
     this.persistState(group)
     return this.snapshotOf(group)
   }
 
-  dissolve(agent: Agent): void {
+  dissolve(agent: Agent, groupId?: GroupId): void {
     const sessionId = agent.session.id
-    const group = this.groups.get(sessionId)
+    const group = this.requireGroup(agent, groupId)
     if (group === undefined) {
       throw new ChatGroupError('NO_GROUP', '当前会话还没有群聊')
     }
@@ -251,11 +278,15 @@ export class ChatGroupService {
     group.soloQueue = []
     group.currentController?.abort(new Error('group dissolved'))
     if (group.currentTimer !== undefined) clearTimeout(group.currentTimer)
-    this.groups.delete(sessionId)
-    this.cancelWaiters(sessionId, true)
+    this.groups.get(sessionId)?.delete(group.id)
+    this.cancelWaiters(sessionId, group.id, true)
+    if (this.currentGroupId.get(sessionId) === group.id) {
+      const remaining = [...this.groups.get(sessionId)?.keys() ?? []]
+      this.currentGroupId.set(sessionId, remaining[0])
+    }
     if (group.cwd !== undefined) {
       try {
-        removePersistedLog(group.cwd, String(group.sessionId))
+        removePersistedLog(group.cwd, String(group.sessionId), group.id)
       } catch (error: unknown) {
         this.ctx.logger('chatgroup').warn(
           `failed to remove persisted group log: ${error instanceof Error ? error.message : String(error)}`,
@@ -265,15 +296,18 @@ export class ChatGroupService {
   }
 
   disposeSession(sessionId: SessionId): void {
-    this.cancelWaiters(sessionId, false)
-    const group = this.groups.get(sessionId)
-    if (group === undefined) return
-    group.destroyed = true
-    group.stopRequested = true
-    group.soloQueue = []
-    group.currentController?.abort(new Error('session disposed'))
-    if (group.currentTimer !== undefined) clearTimeout(group.currentTimer)
+    const sessionGroups = this.groups.get(sessionId)
+    if (sessionGroups === undefined) return
+    for (const group of sessionGroups.values()) {
+      this.cancelWaiters(sessionId, group.id, false)
+      group.destroyed = true
+      group.stopRequested = true
+      group.soloQueue = []
+      group.currentController?.abort(new Error('session disposed'))
+      if (group.currentTimer !== undefined) clearTimeout(group.currentTimer)
+    }
     this.groups.delete(sessionId)
+    this.currentGroupId.delete(sessionId)
   }
 
   disposeAll(): void {
@@ -284,25 +318,33 @@ export class ChatGroupService {
 
   // ── reads ─────────────────────────────────────────────────────────────────
 
-  snapshot(agent: Agent): ChatGroupSnapshot | null {
-    const group = this.ensureLoaded(agent)
-    if (group === undefined) return null
+  snapshot(agent: Agent, groupId?: GroupId): ChatGroupSnapshot | null {
+    this.ensureLoaded(agent)
+    const group = this.requireGroupById(agent.session.id, groupId)
+    if (group === undefined || group.destroyed) return null
     this.syncSandboxMode(agent, group)
     return this.snapshotOf(group)
   }
 
-  requireSnapshot(agent: Agent): ChatGroupSnapshot {
-    const snapshot = this.snapshot(agent)
+  requireSnapshot(agent: Agent, groupId?: GroupId): ChatGroupSnapshot {
+    const snapshot = this.snapshot(agent, groupId)
     if (snapshot === null) {
       throw new ChatGroupError('NO_GROUP', '当前会话还没有群聊，请先 /group create')
     }
     return snapshot
   }
 
+  /** Resolve and remember the group that commands/panel operate on by default. */
+  useGroup(agent: Agent, groupId: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
+    this.currentGroupId.set(agent.session.id, group.id)
+    return this.snapshotOf(group)
+  }
+
   // ── member management ─────────────────────────────────────────────────────
 
-  addMember(agent: Agent, input: CreateAiMemberInput): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  addMember(agent: Agent, input: CreateAiMemberInput, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     this.assertIdle(group)
 
     const name = input.name.trim()
@@ -368,8 +410,8 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  removeMember(agent: Agent, memberName: string): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  removeMember(agent: Agent, memberName: string, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     this.assertIdle(group)
     const member = this.findAiMember(group, memberName)
     group.members = group.members.filter(candidate => candidate.id !== member.id)
@@ -380,8 +422,8 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  reorderMembers(agent: Agent, names: readonly string[]): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  reorderMembers(agent: Agent, names: readonly string[], groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     this.assertIdle(group)
 
     const resolved: string[] = []
@@ -404,19 +446,20 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  setMentionEnabled(agent: Agent, enabled: boolean): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  setMentionEnabled(agent: Agent, enabled: boolean, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     group.mentionEnabled = enabled
     this.bump(group)
     this.persistState(group)
     return this.snapshotOf(group)
   }
 
-  configFor(agent: Agent): ChatGroupConfig {
-    const group = this.ensureLoaded(agent)
+  configFor(agent: Agent, groupId?: GroupId): ChatGroupConfig {
+    const group = this.requireGroup(agent, groupId)
     if (group === undefined) return this.configView()
     return {
       maxAi: group.settings.maxAi,
+      maxGroups: group.settings.maxGroups,
       defaultTimeoutMs: group.settings.defaultTimeoutMs,
       readonlyTools: [...group.settings.readonlyTools],
       waitTimeoutMs: group.settings.waitTimeoutMs,
@@ -425,12 +468,13 @@ export class ChatGroupService {
     }
   }
 
-  updateConfig(agent: Agent, patch: Partial<ChatGroupConfig>): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  updateConfig(agent: Agent, patch: Partial<ChatGroupConfig>, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     this.assertIdle(group)
 
     const next: ChatGroupConfig = {
       maxAi: patch.maxAi ?? group.settings.maxAi,
+      maxGroups: patch.maxGroups ?? group.settings.maxGroups,
       defaultTimeoutMs: patch.defaultTimeoutMs ?? group.settings.defaultTimeoutMs,
       readonlyTools: patch.readonlyTools === undefined
         ? [...group.settings.readonlyTools]
@@ -446,6 +490,9 @@ export class ChatGroupService {
     const aiCount = group.members.filter(member => member.kind === 'ai').length
     if (next.maxAi < aiCount) {
       throw new ChatGroupError('AI_LIMIT_EXCEEDED', `maxAi 不能小于当前 AI 成员数 ${String(aiCount)}`)
+    }
+    if (!Number.isSafeInteger(next.maxGroups) || next.maxGroups < 1) {
+      throw new ChatGroupError('INVALID_ROUNDS', 'maxGroups 必须是正整数')
     }
     if (!Number.isSafeInteger(next.defaultTimeoutMs) || next.defaultTimeoutMs <= 0) {
       throw new ChatGroupError('INVALID_TIMEOUT', 'defaultTimeoutMs 必须是正整数毫秒')
@@ -472,8 +519,8 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  exportTranscript(agent: Agent): string {
-    const group = this.requireGroup(agent)
+  exportTranscript(agent: Agent, groupId?: GroupId): string {
+    const group = this.requireGroup(agent, groupId)
     const lines: string[] = [
       '# 群聊记录',
       '',
@@ -517,8 +564,8 @@ export class ChatGroupService {
 
   // ── conversation actions ──────────────────────────────────────────────────
 
-  send(agent: Agent, text: string): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  send(agent: Agent, text: string, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     const normalized = text.trim()
     if (normalized.length === 0) {
       throw new ChatGroupError('INVALID_TEXT', '发言内容不能为空')
@@ -542,8 +589,8 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  at(agent: Agent, memberName: string, text: string, options: { writeAccess?: boolean } = {}): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  at(agent: Agent, memberName: string, text: string, options: { writeAccess?: boolean } = {}, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     if (!group.mentionEnabled) {
       throw new ChatGroupError('MENTION_DISABLED', '@ 功能当前已关闭')
     }
@@ -572,8 +619,8 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  startAuto(agent: Agent, maxRounds: number, topic?: string): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  startAuto(agent: Agent, maxRounds: number, topic?: string, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     this.assertIdle(group)
     if (group.speakerOrder.length === 0) {
       throw new ChatGroupError('NO_AI_MEMBERS', '请先添加至少一个 AI 成员')
@@ -604,8 +651,8 @@ export class ChatGroupService {
     return this.snapshotOf(group)
   }
 
-  stop(agent: Agent): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  stop(agent: Agent, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     if (group.status === 'idle') return this.snapshotOf(group)
 
     group.stopRequested = true
@@ -623,25 +670,27 @@ export class ChatGroupService {
     revision: number,
     timeoutMs: number,
     signal: AbortSignal,
+    groupId?: GroupId,
   ): Promise<{ changed: boolean; snapshot: ChatGroupSnapshot | null }> {
-    const current = this.groups.get(sessionId)
-    if (current !== undefined && current.revision > revision) {
-      return Promise.resolve({ changed: true, snapshot: this.snapshotOf(current) })
+    const group = this.requireGroupById(sessionId, groupId)
+    if (group !== undefined && group.revision > revision) {
+      return Promise.resolve({ changed: true, snapshot: this.snapshotOf(group) })
     }
 
     return new Promise((resolve) => {
+      const waiterKey = this.waiterKey(sessionId, groupId)
       let settled = false
       const settle = (changed: boolean): void => {
         if (settled) return
         settled = true
-        const set = this.waiters.get(sessionId)
+        const set = this.waiters.get(waiterKey)
         if (set !== undefined) {
           set.delete(waiter)
-          if (set.size === 0) this.waiters.delete(sessionId)
+          if (set.size === 0) this.waiters.delete(waiterKey)
         }
         clearTimeout(timer)
         signal.removeEventListener('abort', onAbort)
-        const latest = this.groups.get(sessionId)
+        const latest = this.requireGroupById(sessionId, groupId)
         resolve({
           changed,
           snapshot: latest === undefined ? null : this.snapshotOf(latest),
@@ -663,8 +712,8 @@ export class ChatGroupService {
         return
       }
 
-      let set = this.waiters.get(sessionId)
-      if (set === undefined) this.waiters.set(sessionId, set = new Set())
+      let set = this.waiters.get(waiterKey)
+      if (set === undefined) this.waiters.set(waiterKey, set = new Set())
       set.add(waiter)
       signal.addEventListener('abort', onAbort, { once: true })
     })
@@ -672,16 +721,44 @@ export class ChatGroupService {
 
   // ── persistence ───────────────────────────────────────────────────────────
 
-  private ensureLoaded(agent: Agent): InternalGroup | undefined {
-    const existing = this.groups.get(agent.session.id)
-    if (existing !== undefined) return existing
+  private ensureLoaded(agent: Agent): void {
+    const sessionId = agent.session.id
+    if (this.groups.has(sessionId)) return
 
     const cwd = agent.session.header?.cwd
-    if (cwd === undefined) return undefined
+    if (cwd === undefined) return
 
+    let persistedIds: string[]
+    try {
+      persistedIds = listPersistedGroupIds(cwd, String(sessionId))
+    } catch (error: unknown) {
+      this.ctx.logger('chatgroup').warn(
+        `failed to list persisted group logs: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return
+    }
+
+    if (persistedIds.length === 0) return
+
+    let sessionGroups = this.groups.get(sessionId)
+    if (sessionGroups === undefined) this.groups.set(sessionId, sessionGroups = new Map())
+    for (const groupId of persistedIds) {
+      if (sessionGroups.has(groupId)) continue
+      const restored = this.restoreGroup(agent, groupId as GroupId, cwd)
+      if (restored !== undefined) {
+        sessionGroups.set(groupId as GroupId, restored)
+        if (!this.currentGroupId.has(sessionId)) {
+          this.currentGroupId.set(sessionId, groupId as GroupId)
+        }
+      }
+    }
+    if (sessionGroups.size === 0) this.groups.delete(sessionId)
+  }
+
+  private restoreGroup(agent: Agent, groupId: GroupId, cwd: string): InternalGroup | undefined {
     let records: PersistedRecord[]
     try {
-      records = readPersistedRecords(cwd, String(agent.session.id))
+      records = readPersistedRecords(cwd, String(agent.session.id), groupId)
     } catch (error: unknown) {
       this.ctx.logger('chatgroup').warn(
         `failed to read persisted group log: ${error instanceof Error ? error.message : String(error)}`,
@@ -742,7 +819,7 @@ export class ChatGroupService {
     )
 
     const group: InternalGroup = {
-      id: snapshot.groupId,
+      id: groupId,
       sessionId: snapshot.sessionId,
       ...snapshot.cwd === undefined ? {} : { cwd: snapshot.cwd },
       revision,
@@ -774,6 +851,7 @@ export class ChatGroupService {
       }],
       settings: {
         maxAi: this.config.maxAi,
+        maxGroups: this.config.maxGroups,
         defaultTimeoutMs: this.config.defaultTimeoutMs,
         readonlyTools: [...this.config.readonlyTools],
         waitTimeoutMs: this.config.waitTimeoutMs,
@@ -782,7 +860,6 @@ export class ChatGroupService {
       },
     }
 
-    this.groups.set(agent.session.id, group)
     this.syncSandboxMode(agent, group)
     if (wasAutoActive) this.persistState(group)
     return group
@@ -804,7 +881,7 @@ export class ChatGroupService {
 
   private persist(group: InternalGroup, record: PersistedRecord): void {
     try {
-      appendPersistedRecord(group.cwd!, String(group.sessionId), record)
+      appendPersistedRecord(group.cwd!, String(group.sessionId), group.id, record)
     } catch (error: unknown) {
       this.ctx.logger('chatgroup').warn(
         `failed to persist chat group record: ${error instanceof Error ? error.message : String(error)}`,
@@ -812,8 +889,8 @@ export class ChatGroupService {
     }
   }
 
-  startTopic(agent: Agent, title: string): ChatGroupSnapshot {
-    const group = this.requireGroup(agent)
+  startTopic(agent: Agent, title: string, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
     const normalized = title.trim()
     if (normalized.length === 0) {
       throw new ChatGroupError('INVALID_TEXT', '新议题内容不能为空')
@@ -866,13 +943,34 @@ export class ChatGroupService {
 
   // ── scheduler internals ───────────────────────────────────────────────────
 
-  private requireGroup(agent: Agent): InternalGroup {
-    const group = this.ensureLoaded(agent)
+  /**
+   * Resolve the group a request targets. An explicit groupId wins; otherwise
+   * the session's remembered current group (first restored / last used) is
+   * used, matching v0.2 single-group behavior when only one group exists.
+   * Throws NO_GROUP when no group exists.
+   */
+  private requireGroup(agent: Agent, groupId?: GroupId): InternalGroup {
+    this.ensureLoaded(agent)
+    const group = this.requireGroupById(agent.session.id, groupId)
     if (group === undefined || group.destroyed) {
       throw new ChatGroupError('NO_GROUP', '当前会话还没有群聊，请先 /group create')
     }
     this.syncSandboxMode(agent, group)
     return group
+  }
+
+  private requireGroupById(sessionId: SessionId, groupId?: GroupId): InternalGroup | undefined {
+    const sessionGroups = this.groups.get(sessionId)
+    if (sessionGroups === undefined || sessionGroups.size === 0) return undefined
+    if (groupId !== undefined) return sessionGroups.get(groupId)
+    const current = this.currentGroupId.get(sessionId)
+    if (current !== undefined && sessionGroups.has(current)) return sessionGroups.get(current)
+    return sessionGroups.values().next().value as InternalGroup | undefined
+  }
+
+  private waiterKey(sessionId: SessionId, groupId?: GroupId): string {
+    const group = this.requireGroupById(sessionId, groupId)
+    return `${String(sessionId)}:${group?.id ?? 'none'}`
   }
 
   private assertIdle(group: InternalGroup): void {
@@ -958,7 +1056,7 @@ export class ChatGroupService {
 
   private async loop(agent: Agent, group: InternalGroup): Promise<void> {
     try {
-      while (this.groups.get(group.sessionId) === group && !group.destroyed) {
+      while (this.isLive(group) && !group.destroyed) {
         if (group.stopRequested || group.status !== 'running') {
           this.finishGroup(group)
           return
@@ -976,7 +1074,7 @@ export class ChatGroupService {
       this.ctx.logger('chatgroup').warn(
         `scheduler loop failed: ${error instanceof Error ? error.message : String(error)}`,
       )
-      if (this.groups.get(group.sessionId) === group && !group.destroyed) {
+      if (this.isLive(group) && !group.destroyed) {
         this.finishGroup(group, agent)
       }
     } finally {
@@ -1076,7 +1174,7 @@ export class ChatGroupService {
         prompt,
         controller.signal,
         delta => {
-          if (group.destroyed || this.groups.get(group.sessionId) !== group) return
+          if (group.destroyed || !this.isLive(group)) return
           const current = group.messages.find(candidate => candidate.id === message.id)
           if (current === undefined) return
           group.messages = group.messages.map(candidate => candidate.id === message.id
@@ -1110,7 +1208,7 @@ export class ChatGroupService {
       group.currentMessageId = undefined
     }
 
-    if (!group.destroyed && this.groups.get(group.sessionId) === group) {
+    if (!group.destroyed && this.isLive(group)) {
       const updated = group.messages.find(candidate => candidate.id === message.id)
       const finalMessage: ChatGroupMessage | undefined = updated === undefined ? undefined : {
         ...updated,
@@ -1219,6 +1317,7 @@ export class ChatGroupService {
       sandboxMode: group.sandboxMode,
       config: {
         maxAi: group.settings.maxAi,
+        maxGroups: group.settings.maxGroups,
         defaultTimeoutMs: group.settings.defaultTimeoutMs,
         readonlyTools: [...group.settings.readonlyTools],
         waitTimeoutMs: group.settings.waitTimeoutMs,
@@ -1232,33 +1331,61 @@ export class ChatGroupService {
       ...group.currentSpeakerId === undefined ? {} : { currentSpeakerId: group.currentSpeakerId },
       nextSpeakerIds,
       soloQueue: [...group.soloQueue],
+      groups: this.groupSummaries(group.sessionId),
     }
   }
 
-  private cancelWaiters(sessionId: SessionId, changed: boolean): void {
-    const set = this.waiters.get(sessionId)
+  private groupSummaries(sessionId: SessionId): ChatGroupSummary[] {
+    const sessionGroups = this.groups.get(sessionId)
+    if (sessionGroups === undefined) return []
+    return [...sessionGroups.values()]
+      .filter(group => !group.destroyed)
+      .map(group => {
+        const topic = group.topics.find(candidate => candidate.id === group.currentTopicId)
+        return {
+          groupId: group.id,
+          status: group.status,
+          round: group.round,
+          totalMessages: group.messages.length,
+          currentTopicTitle: topic?.title ?? '默认话题',
+        }
+      })
+  }
+
+  private cancelWaiters(sessionId: SessionId, groupId: GroupId, changed: boolean): void {
+    const key = `${String(sessionId)}:${groupId}`
+    const set = this.waiters.get(key)
     if (set === undefined) return
-    this.waiters.delete(sessionId)
+    this.waiters.delete(key)
+    const group = this.groups.get(sessionId)?.get(groupId)
     for (const waiter of set) {
       clearTimeout(waiter.timer)
-      waiter.resolve({ changed, snapshot: this.groups.get(sessionId) === undefined ? null : this.snapshotOf(this.groups.get(sessionId)!) })
+      waiter.resolve({ changed, snapshot: group === undefined ? null : this.snapshotOf(group) })
     }
   }
 
   private bump(group: InternalGroup): void {
     group.revision += 1
-    const set = this.waiters.get(group.sessionId)
-    if (set === undefined || set.size === 0) return
-    for (const waiter of [...set]) {
-      if (waiter.revision < group.revision) {
-        set.delete(waiter)
-        clearTimeout(waiter.timer)
-        waiter.resolve({
-          changed: true,
-          snapshot: this.snapshotOf(group, { fullMessages: true }),
-        })
+    const key = `${String(group.sessionId)}:${group.id}`
+    const noneKey = `${String(group.sessionId)}:none`
+    for (const targetKey of [key, noneKey]) {
+      const set = this.waiters.get(targetKey)
+      if (set === undefined || set.size === 0) continue
+      for (const waiter of [...set]) {
+        if (waiter.revision < group.revision) {
+          set.delete(waiter)
+          clearTimeout(waiter.timer)
+          waiter.resolve({
+            changed: true,
+            snapshot: this.snapshotOf(group, { fullMessages: true }),
+          })
+        }
       }
+      if (set.size === 0) this.waiters.delete(targetKey)
     }
-    if (set.size === 0) this.waiters.delete(group.sessionId)
+  }
+
+  private isLive(group: InternalGroup): boolean {
+    return this.groups.get(group.sessionId)?.get(group.id) === group
   }
 }

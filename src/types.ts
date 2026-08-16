@@ -5,12 +5,14 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 export const USER_MEMBER_ID = 'user'
 export const SYSTEM_MEMBER_ID = 'system'
 export const DEFAULT_MAX_AI = 5
+export const DEFAULT_MAX_GROUPS = 1
 export const DEFAULT_SPEECH_TIMEOUT_MS = 300_000
 export const DEFAULT_WAIT_TIMEOUT_MS = 25_000
 export const DEFAULT_MAX_PROMPT_MESSAGES = 40
 export const DEFAULT_MESSAGE_PAGE_SIZE = 100
 export const DEFAULT_READONLY_TOOLS = ['read', 'read_image', 'glob', 'grep'] as const
 
+export type GroupId = string
 export type MemberRole = 'admin' | 'member'
 export type MemberKind = 'user' | 'ai'
 export type GroupStatus = 'idle' | 'running'
@@ -71,7 +73,7 @@ export interface ChatGroupMessage {
 }
 
 export interface ChatGroupSnapshot {
-  readonly groupId: string
+  readonly groupId: GroupId
   readonly sessionId: SessionId
   /** Working directory inherited from the owning dsh session, if configured. */
   readonly cwd?: string
@@ -98,6 +100,17 @@ export interface ChatGroupSnapshot {
   readonly currentTopicId: string
   readonly topics: readonly ChatTopic[]
   readonly sandboxMode?: string
+  /** All groups in the session (V2.1 multi-group). */
+  readonly groups: readonly ChatGroupSummary[]
+}
+
+/** Lightweight cross-group navigation row (V2.1). */
+export interface ChatGroupSummary {
+  readonly groupId: GroupId
+  readonly status: GroupStatus
+  readonly round: number
+  readonly totalMessages: number
+  readonly currentTopicTitle: string
 }
 
 export interface CreateAiMemberInput {
@@ -110,6 +123,7 @@ export interface CreateAiMemberInput {
 
 export interface ChatGroupConfig {
   readonly maxAi: number
+  readonly maxGroups: number
   readonly defaultTimeoutMs: number
   readonly readonlyTools: readonly string[]
   readonly waitTimeoutMs: number

@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { ChatGroupError } from './errors.js'
 import type { ChatGroupService } from './group-service.js'
-import type { ChatGroupSnapshot } from './types.js'
+import type { ChatGroupSnapshot, GroupId } from './types.js'
 
 const CHANNEL = '/chatgroup'
 const CATALOG_TTL_MS = 30_000
@@ -34,6 +34,12 @@ function stringField(payload: Record<string, unknown>, key: string): string | un
   if (value === undefined) return undefined
   if (typeof value !== 'string') return undefined
   return value
+}
+
+/** Optional per-group target; absent = the session's current/only group. */
+function groupIdField(payload: Record<string, unknown>): GroupId | undefined {
+  const value = stringField(payload, 'groupId')
+  return value === undefined || value.length === 0 ? undefined : value as GroupId
 }
 
 interface SnapshotResponse {
@@ -76,13 +82,13 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
 
       switch (endpoint) {
         case 'export': {
-          const content = service.exportTranscript(agent)
+          const content = service.exportTranscript(agent, groupIdField(rawPayload))
           const stamp = new Date().toISOString().replaceAll(':', '-').slice(0, 19)
           return ok({ content, filename: `chatgroup-${String(sessionId)}-${stamp}.md` })
         }
 
         case 'snapshot': {
-          const snapshot = service.snapshot(agent)
+          const snapshot = service.snapshot(agent, groupIdField(rawPayload))
           return ok<SnapshotResponse>({
             revision: snapshot?.revision ?? -1,
             group: snapshot,
@@ -94,8 +100,14 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           if (typeof revisionRaw !== 'number' || !Number.isSafeInteger(revisionRaw) || revisionRaw < -1) {
             return fail('BAD_REQUEST', 'revision must be a non-negative integer or -1')
           }
-          const current = service.snapshot(agent)
-          const waited = await service.waitForRevision(sessionId, revisionRaw, service.waitTimeoutMs, signal)
+          const current = service.snapshot(agent, groupIdField(rawPayload))
+          const waited = await service.waitForRevision(
+            sessionId,
+            revisionRaw,
+            service.waitTimeoutMs,
+            signal,
+            groupIdField(rawPayload),
+          )
           return ok<WaitResponse>({
             changed: waited.changed,
             revision: waited.snapshot?.revision ?? current?.revision ?? -1,
@@ -109,13 +121,13 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
         }
 
         case 'dissolve': {
-          service.dissolve(agent)
+          service.dissolve(agent, groupIdField(rawPayload))
           return ok<null>(null)
         }
 
         case 'send': {
           const text = stringField(rawPayload, 'text') ?? ''
-          const snapshot = service.send(agent, text)
+          const snapshot = service.send(agent, text, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
@@ -124,19 +136,31 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           const text = stringField(rawPayload, 'text') ?? ''
           const snapshot = service.at(agent, memberName, text, {
             writeAccess: rawPayload.writeAccess === true,
-          })
+          }, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
         case 'stop': {
-          const snapshot = service.stop(agent)
+          const snapshot = service.stop(agent, groupIdField(rawPayload))
+          return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
+        }
+
+        case 'groups.list': {
+          const snapshot = service.requireSnapshot(agent)
+          return ok({ groups: snapshot.groups })
+        }
+
+        case 'groups.use': {
+          const groupId = stringField(rawPayload, 'groupId') ?? ''
+          if (groupId.length === 0) return fail('BAD_REQUEST', 'groupId is required')
+          const snapshot = service.useGroup(agent, groupId as GroupId)
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
         case 'topic.messages': {
           const topicId = stringField(rawPayload, 'topicId') ?? ''
           if (topicId.length === 0) return fail('BAD_REQUEST', 'topicId is required')
-          const messages = service.topicMessages(sessionId, topicId)
+          const messages = service.topicMessages(sessionId, topicId, groupIdField(rawPayload))
           if (messages === null) return fail('NO_GROUP', '当前会话还没有群聊')
           return ok({ messages })
         }
@@ -150,14 +174,14 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           if (limit !== undefined && (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0)) {
             return fail('BAD_REQUEST', 'limit must be a positive integer')
           }
-          const page = service.messagesBefore(sessionId, beforeSeq, limit)
+          const page = service.messagesBefore(sessionId, beforeSeq, limit, groupIdField(rawPayload))
           if (page === null) return fail('NO_GROUP', '当前会话还没有群聊')
           return ok(page)
         }
 
         case 'topic.start': {
           const title = stringField(rawPayload, 'title') ?? ''
-          const snapshot = service.startTopic(agent, title)
+          const snapshot = service.startTopic(agent, title, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
@@ -167,7 +191,7 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
             return fail('BAD_REQUEST', 'maxRounds must be an integer')
           }
           const topic = stringField(rawPayload, 'topic') ?? ''
-          const snapshot = service.startAuto(agent, maxRounds, topic)
+          const snapshot = service.startAuto(agent, maxRounds, topic, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
@@ -182,13 +206,13 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
               ? {}
               : { systemPrompt: stringField(member, 'systemPrompt') },
             ...typeof member.timeoutMs === 'number' ? { timeoutMs: member.timeoutMs } : {},
-          })
+          }, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
         case 'members.remove': {
           const memberName = stringField(rawPayload, 'memberName') ?? ''
-          const snapshot = service.removeMember(agent, memberName)
+          const snapshot = service.removeMember(agent, memberName, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
@@ -197,13 +221,14 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
             ? rawPayload.names.filter((name): name is string => typeof name === 'string')
             : undefined
           if (names === undefined) return fail('BAD_REQUEST', 'names must be a string array')
-          const snapshot = service.reorderMembers(agent, names)
+          const snapshot = service.reorderMembers(agent, names, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
         case 'settings.config.update': {
           const patch: Record<string, unknown> = {}
           if (typeof rawPayload.maxAi === 'number') patch.maxAi = rawPayload.maxAi
+          if (typeof rawPayload.maxGroups === 'number') patch.maxGroups = rawPayload.maxGroups
           if (typeof rawPayload.defaultTimeoutMs === 'number') patch.defaultTimeoutMs = rawPayload.defaultTimeoutMs
           if (Array.isArray(rawPayload.readonlyTools) && rawPayload.readonlyTools.every(tool => typeof tool === 'string')) {
             patch.readonlyTools = rawPayload.readonlyTools
@@ -211,7 +236,7 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           if (typeof rawPayload.waitTimeoutMs === 'number') patch.waitTimeoutMs = rawPayload.waitTimeoutMs
           if (typeof rawPayload.maxPromptMessages === 'number') patch.maxPromptMessages = rawPayload.maxPromptMessages
           if (typeof rawPayload.messagePageSize === 'number') patch.messagePageSize = rawPayload.messagePageSize
-          const snapshot = service.updateConfig(agent, patch)
+          const snapshot = service.updateConfig(agent, patch, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
@@ -220,7 +245,7 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           if (typeof mentionEnabled !== 'boolean') {
             return fail('BAD_REQUEST', 'mentionEnabled must be a boolean')
           }
-          const snapshot = service.setMentionEnabled(agent, mentionEnabled)
+          const snapshot = service.setMentionEnabled(agent, mentionEnabled, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 

@@ -1,7 +1,7 @@
 import { createElement, Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, UIEvent as ReactUIEvent } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ChatGroupConfig, ChatGroupMessage, ChatGroupSnapshot } from '../types.js'
+import type { ChatGroupConfig, ChatGroupMessage, ChatGroupSnapshot, ChatGroupSummary, GroupId } from '../types.js'
 import type { ChatGroupPanelController } from './panel-controller.js'
 import type { ChatGroupRpcClient, ModelCatalog } from './rpc-client.js'
 
@@ -136,6 +136,7 @@ function statusLabel(status: string, statusOnly = false): string {
 export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelProps) {
   const sessionId = useSyncExternalStore(controller.subscribe, controller.getSessionId)
   const currentSessionId = useSessions(state => state.current)
+  const [groupId, setGroupId] = useState<GroupId | ''>('')
   const [group, setGroup] = useState<ChatGroupSnapshot | null>(null)
   const [revision, setRevision] = useState(-1)
   const revisionRef = useRef(-1)
@@ -209,6 +210,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   useEffect(() => {
     if (sessionId === null) {
+      setGroupId('')
       setGroup(null)
       setRevision(-1)
       revisionRef.current = -1
@@ -222,8 +224,11 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     let disposed = false
 
     async function refresh(): Promise<void> {
-      const next = await rpc.snapshot(sessionId!, controllerAbort.signal)
+      const next = await rpc.snapshot(sessionId!, groupId === '' ? undefined : groupId, controllerAbort.signal)
       if (disposed) return
+      if (next.group !== null && groupId === '') {
+        setGroupId(next.group.groupId)
+      }
       setGroup(next.group)
       setRevision(next.revision)
       revisionRef.current = next.revision
@@ -232,9 +237,12 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     async function watch(): Promise<void> {
       while (!disposed && !controllerAbort.signal.aborted) {
         try {
-          const waited = await rpc.wait(sessionId!, revisionRef.current, controllerAbort.signal)
+          const waited = await rpc.wait(sessionId!, revisionRef.current, groupId === '' ? undefined : groupId, controllerAbort.signal)
           if (disposed || controllerAbort.signal.aborted) return
           if (waited.changed) {
+            if (waited.group !== null && groupId === '') {
+              setGroupId(waited.group.groupId)
+            }
             setGroup(waited.group)
             setRevision(waited.revision)
             revisionRef.current = waited.revision
@@ -265,7 +273,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       disposed = true
       controllerAbort.abort()
     }
-  }, [sessionId])
+  }, [sessionId, groupId])
 
   useEffect(() => {
     if (group !== null) setOrderText(group.speakerOrder.map(id => memberName(group, id)).join(', '))
@@ -361,8 +369,8 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       return
     }
     const envelope = await run(signal => mentionId
-      ? rpc.at(sessionId, mentionId, text, { writeAccess: allowWrite }, signal)
-      : rpc.send(sessionId, text, signal))
+      ? rpc.at(sessionId, mentionId, text, { writeAccess: allowWrite }, groupId === '' ? undefined : groupId, signal)
+      : rpc.send(sessionId, text, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -376,14 +384,31 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     if (sessionId === null) return
     const envelope = await run(signal => rpc.create(sessionId, signal))
     if (envelope === undefined) return
+    setGroupId(envelope.group?.groupId ?? '')
     setGroup(envelope.group)
     setRevision(envelope.revision)
     revisionRef.current = envelope.revision
   }
 
+  async function switchGroup(target: string): Promise<void> {
+    if (sessionId === null || target === groupId) return
+    const envelope = await run(signal => rpc.useGroup(sessionId, target as GroupId, signal))
+    if (envelope === undefined) return
+    setGroupId(target)
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+    setOlderMessages([])
+    setHasMoreOlder(false)
+    setTopicFilter('all')
+    setFilteredTopicMessages([])
+    setText('')
+    setMentionId('')
+  }
+
   async function stopRound(): Promise<void> {
     if (sessionId === null) return
-    const envelope = await run(signal => rpc.stop(sessionId, signal))
+    const envelope = await run(signal => rpc.stop(sessionId, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -399,7 +424,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       model: memberForm.model.trim(),
       ...memberForm.systemPrompt.trim() ? { systemPrompt: memberForm.systemPrompt.trim() } : {},
       ...memberForm.timeout.trim() ? { timeoutMs: Number(memberForm.timeout.trim()) } : {},
-    }, signal))
+    }, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -415,7 +440,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   async function removeMember(name: string): Promise<void> {
     if (sessionId === null) return
-    const envelope = await run(signal => rpc.removeMember(sessionId, name, signal))
+    const envelope = await run(signal => rpc.removeMember(sessionId, name, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -425,7 +450,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   async function saveOrder(): Promise<void> {
     if (sessionId === null) return
     const names = orderText.split(/[,，\s]+/).map(token => token.trim()).filter(Boolean)
-    const envelope = await run(signal => rpc.reorderMembers(sessionId, names, signal))
+    const envelope = await run(signal => rpc.reorderMembers(sessionId, names, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -434,7 +459,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   async function toggleMention(): Promise<void> {
     if (sessionId === null || group === null) return
-    const envelope = await run(signal => rpc.setMentionEnabled(sessionId, !group.mentionEnabled, signal))
+    const envelope = await run(signal => rpc.setMentionEnabled(sessionId, !group.mentionEnabled, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -443,7 +468,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   async function dissolve(): Promise<void> {
     if (sessionId === null) return
-    await run(signal => rpc.dissolve(sessionId, signal))
+    await run(signal => rpc.dissolve(sessionId, groupId === '' ? undefined : groupId, signal))
     setGroup(null)
     setRevision(-1)
     revisionRef.current = -1
@@ -459,7 +484,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
     setLoadingOlder(true)
     try {
-      const page = await rpc.messagesBefore(sessionId, beforeSeq)
+      const page = await rpc.messagesBefore(sessionId, beforeSeq, undefined, groupId === '' ? undefined : groupId)
       setOlderMessages(previous => {
         const existing = new Set(previous.map(message => message.seq))
         return [...page.messages.filter(message => !existing.has(message.seq)), ...previous]
@@ -481,7 +506,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     }
     if (sessionId === null) return
     try {
-      const page = await rpc.topicMessages(sessionId, topicId)
+      const page = await rpc.topicMessages(sessionId, topicId, groupId === '' ? undefined : groupId)
       setFilteredTopicMessages(page.messages)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -519,7 +544,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       waitTimeoutMs,
       maxPromptMessages,
       messagePageSize,
-    }, signal))
+    }, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -529,7 +554,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   async function exportChat(): Promise<void> {
     if (sessionId === null) return
     try {
-      const result = await rpc.exportTranscript(sessionId)
+      const result = await rpc.exportTranscript(sessionId, groupId === '' ? undefined : groupId)
       const blob = new Blob([result.content], { type: 'text/markdown;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
@@ -561,7 +586,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       return
     }
     if (typeof window !== 'undefined' && !window.confirm(`结束当前讨论并开启新议题：${title}？`)) return
-    const envelope = await run(signal => rpc.startTopic(sessionId, title, signal))
+    const envelope = await run(signal => rpc.startTopic(sessionId, title, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -583,6 +608,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       sessionId,
       rounds,
       autoForm.topic.trim().length > 0 ? autoForm.topic.trim() : undefined,
+      groupId === '' ? undefined : groupId,
       signal,
     ))
     if (envelope === undefined) return
@@ -609,10 +635,24 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   const header = createElement('div', { style: headerStyle },
     createElement('div', { style: { flex: 1, minWidth: 0 } },
-      createElement('div', { style: titleStyle },
-        group === null
-          ? '项目讨论群'
-          : `项目讨论群 · 第 ${group.round} 轮${group.blindRoundActive ? ' · 盲发中' : ''}`),
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        createElement('div', { style: titleStyle },
+          group === null
+            ? '项目讨论群'
+            : `项目讨论群 · 第 ${group.round} 轮${group.blindRoundActive ? ' · 盲发中' : ''}`),
+        group === null || group.groups.length <= 1 ? null : createElement('select', {
+          style: { ...inputStyle, width: 170, fontSize: 12 },
+          value: group.groupId,
+          onChange: (event: ReactChangeEvent<HTMLSelectElement>) => { void switchGroup(event.target.value) },
+        },
+          ...group.groups.map(summary => createElement('option', { key: summary.groupId, value: summary.groupId },
+            `${summary.groupId}${summary.status === 'running' ? ' · 发言中' : ''} · ${summary.currentTopicTitle}`))),
+        group === null ? null : createElement('button', {
+          type: 'button',
+          style: { ...buttonStyle, padding: '2px 8px', fontSize: 11 },
+          title: '新建群（需 maxGroups > 1）',
+          onClick: () => { void createGroup() },
+        }, '＋新建群')),
       group === null ? null : createElement('div', {
         style: { fontSize: 11, color: group.cwd === undefined ? '#b45309' : '#4b5563', marginTop: 2 },
         title: group.cwd ?? '当前会话没有工作目录',

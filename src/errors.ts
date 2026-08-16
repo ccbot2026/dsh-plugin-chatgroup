@@ -3,6 +3,7 @@
 export type ChatGroupErrorCode =
   | 'NO_GROUP'
   | 'GROUP_EXISTS'
+  | 'GROUP_LIMIT_EXCEEDED'
   | 'GROUP_IDLE_REQUIRED'
   | 'AI_LIMIT_EXCEEDED'
   | 'NO_AI_MEMBERS'
