@@ -57,8 +57,9 @@ const messageListStyle: React.CSSProperties = {
 }
 
 const sidebarStyle: React.CSSProperties = {
+  position: 'relative',
   width: 320,
-  minWidth: 260,
+  minWidth: 240,
   borderLeft: '1px solid #e2e5ea',
   background: '#f8fafc',
   overflowY: 'auto',
@@ -243,6 +244,16 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   })
   const drawerWidthRef = useRef(drawerWidth)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  /** V0.4.1: right settings sidebar width + collapsed state. */
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') return 320
+    const stored = Number(window.localStorage.getItem('chatgroup.sidebarWidth'))
+    if (Number.isFinite(stored) && stored >= 240) return Math.min(stored, 460)
+    return 320
+  })
+  const sidebarWidthRef = useRef(sidebarWidth)
+  const [settingsCollapsed, setSettingsCollapsed] = useState(false)
 
   function beginResize(event: ReactPointerEvent<HTMLDivElement>): void {
     event.preventDefault()
@@ -265,6 +276,37 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
         window.localStorage.setItem('chatgroup.drawerWidth', String(drawerWidthRef.current))
       } catch {
         // Ignore storage failures (private mode / disabled localStorage).
+      }
+    }
+
+    target.addEventListener('pointermove', move)
+    target.addEventListener('pointerup', up)
+    target.addEventListener('pointercancel', up)
+  }
+
+  /** V0.4.1: drag the right settings sidebar's left edge to resize it. */
+  function beginSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    event.preventDefault()
+    const target = event.currentTarget
+    target.setPointerCapture(event.pointerId)
+
+    const move = (moveEvent: PointerEvent): void => {
+      if (typeof window === 'undefined' || panelRef.current === null) return
+      const panelRect = panelRef.current.getBoundingClientRect()
+      const width = Math.max(240, Math.min(panelRect.right - moveEvent.clientX, 460))
+      sidebarWidthRef.current = width
+      setSidebarWidth(width)
+    }
+
+    const up = (): void => {
+      target.releasePointerCapture(event.pointerId)
+      target.removeEventListener('pointermove', move)
+      target.removeEventListener('pointerup', up)
+      target.removeEventListener('pointercancel', up)
+      try {
+        window.localStorage.setItem('chatgroup.sidebarWidth', String(sidebarWidthRef.current))
+      } catch {
+        // Ignore storage failures.
       }
     }
 
@@ -418,6 +460,25 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     }
     if (sessionId !== currentSessionId) controller.open(currentSessionId)
   }, [sessionId, currentSessionId, controller])
+
+  // V0.4.1: clicking outside the panel auto-hides it (except the launcher).
+  useEffect(() => {
+    if (sessionId === null) return
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (panelRef.current !== null && panelRef.current.contains(target)) return
+      const launcher = (target as HTMLElement).closest?.('[data-chatgroup-launcher]')
+      if (launcher !== null && launcher !== undefined) return
+      controller.close()
+    }
+    // Defer a tick so the opening click itself does not immediately close it.
+    const timer = setTimeout(() => document.addEventListener('pointerdown', onPointerDown, true), 0)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+    }
+  }, [sessionId, controller])
 
   async function run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     setBusy(true)
@@ -739,6 +800,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     if (currentSessionId === undefined) return null
     return createElement('button', {
       type: 'button',
+      'data-chatgroup-launcher': true,
       style: launcherStyle,
       title: '打开群聊',
       onClick: () => controller.open(currentSessionId),
@@ -763,13 +825,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
           onChange: (event: ReactChangeEvent<HTMLSelectElement>) => { void switchGroup(event.target.value) },
         },
           ...group.groups.map(summary => createElement('option', { key: summary.groupId, value: summary.groupId },
-            `${summary.groupId}${summary.status === 'running' ? ' · 发言中' : ''} · ${summary.currentTopicTitle}`))),
-        group === null ? null : createElement('button', {
-          type: 'button',
-          style: { ...buttonStyle, padding: '2px 8px', fontSize: 11 },
-          title: '新建群（需 maxGroups > 1）',
-          onClick: () => { void createGroup() },
-        }, '＋新建群')),
+            `${summary.groupId}${summary.status === 'running' ? ' · 发言中' : ''} · ${summary.currentTopicTitle}`)))),
       group === null ? null : createElement('div', {
         style: { fontSize: 11, color: group.cwd === undefined ? '#b45309' : '#4b5563', marginTop: 2 },
         title: group.cwd ?? '当前会话没有工作目录',
@@ -788,8 +844,13 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
         title: `${memberName(group, group.toolActivity.memberId)} 正在调用 ${group.toolActivity.tool} ${group.toolActivity.argsPreview}`,
       }, `${memberName(group, group.toolActivity.memberId)} 正在${group.toolActivity.tool}${group.toolActivity.argsPreview === '' ? '' : ` ${group.toolActivity.argsPreview}`}…`)
       : null,
-    createElement('button', { type: 'button', style: buttonStyle, onClick: () => { void exportChat() } }, '导出'),
-    createElement('button', { type: 'button', style: buttonStyle, onClick: () => controller.close() }, '关闭'),
+    // V0.4.1: collapse/expand the right settings sidebar (gear icon).
+    createElement('button', {
+      type: 'button',
+      style: { ...buttonStyle, padding: '3px 9px', fontSize: 14, lineHeight: 1 },
+      title: settingsCollapsed ? '展开设置' : '收起设置',
+      onClick: () => setSettingsCollapsed(value => !value),
+    }, settingsCollapsed ? '⚙' : '▸'),
   )
 
   const displayMessages = group === null
@@ -886,8 +947,6 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       running
         ? createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void stopRound() } }, '结束本轮')
         : null,
-      createElement('button', { type: 'button', style: buttonStyle, onClick: () => setShowSettings(value => !value) }, showSettings ? '收起设置' : '成员与设置'),
-      createElement('button', { type: 'button', style: buttonStyle, onClick: () => { void dissolve() } }, '解散'),
     ),
     createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
       group.mentionEnabled && aiMembers.length > 0
@@ -929,14 +988,19 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     ),
   )
 
-  const settings = group === null || !showSettings ? null : createElement('aside', { style: sidebarStyle },
+  const settings = group === null || !showSettings || settingsCollapsed ? null : createElement('aside', { style: { ...sidebarStyle, width: sidebarWidth } },
+    createElement('div', { style: resizeHandleStyle, title: '拖动调整设置面板宽度', onPointerDown: beginSidebarResize }),
 
-    // ── 群信息 ──────────────────────────────────────────────────────────────
+    // ── 群管理 ──────────────────────────────────────────────────────────────
     createElement('details', { style: sectionStyle, open: true },
-      createElement('summary', { style: sectionSummaryStyle }, '群信息'),
+      createElement('summary', { style: sectionSummaryStyle }, '群管理'),
       createElement('div', { style: sectionBodyStyle },
-        createElement('div', { style: { fontSize: 12, color: '#4b5563', marginBottom: 4 } },
-          `群 ID：${group.groupId}${group.name === undefined ? '' : ` · 名称：${group.name}`}`),
+        createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 } },
+          createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy, onClick: () => { void createGroup() } }, '＋新建群'),
+          createElement('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: () => { void exportChat() } }, '导出群聊'),
+          createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void dissolve() } }, '解散群'),
+        ),
+        createElement('div', { style: fieldLabelStyle }, '群名称'),
         createElement('div', { style: { display: 'flex', gap: 6 } },
           createElement('input', { style: inputStyle, placeholder: '输入新群名…', value: renameValue, onChange: event => setRenameValue(event.target.value) }),
           createElement('button', { type: 'button', style: buttonStyle, disabled: busy || renameValue.trim().length === 0, onClick: () => { void renameGroup() } }, '重命名')),
@@ -1119,7 +1183,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       settings,
     )
 
-  return createElement('aside', { style: { ...drawerStyle, width: drawerWidth }, 'aria-label': '群聊面板' },
+  return createElement('aside', { ref: panelRef, style: { ...drawerStyle, width: drawerWidth }, 'aria-label': '群聊面板' },
     createElement('div', { style: resizeHandleStyle, title: '拖动调整宽度', onPointerDown: beginResize }),
     header,
     error === null ? null : createElement('div', { style: { padding: '6px 12px', background: '#fef2f2', color: '#b91c1c', fontSize: 12 } }, error),
