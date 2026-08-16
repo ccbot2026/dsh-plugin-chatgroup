@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.0.0
+
+### 多群（V2.1）
+
+- 一个会话支持多个群（`maxGroups`，默认 1 保持兼容；群 ID `group-1..group-N`）。
+- 全部 Service/RPC API groupId 化；`/group list`、`/group use <群ID>`、`groups.list` / `groups.use`。
+- 持久化 v2：`<sessionId>-<groupId>.jsonl`；v1 单群日志自动迁移为 `group-1`（文件名不变）。
+- 面板群选择器 + 新建群按钮；waiters 按群隔离。
+
+### 消息编辑 / 撤回（V2.2）
+
+- `editMessage` / `withdrawMessage`：仅管理员、仅最近 `maxEditableMessages` 条（默认 20）、不可编辑发言中/已撤回。
+- 撤回消息从所有后续 AI prompt 消失；编辑消息以新文本 +（已编辑）标注进入 prompt，原文保留供审计。
+- RPC `messages.edit` / `messages.withdraw`；命令 `/group edit <seq> <text>`、`/group withdraw <seq>`。
+- 面板消息气泡 hover 出现编辑/撤回，行内编辑框。
+
+### AI 主动发言与 AI 互 @（V2.3）
+
+- `aiProactive`（默认 false）/ `maxProactivePerRound`（默认 1）/ `maxAiMentionDepth`（默认 1）。
+- 轮次正常结束后逐个咨询 AI 是否补充，最多 `maxProactivePerRound` 条；"无需补充"被识别为放弃。
+- AI 消息中 `@成员名` 触发单深度回应；深度超限与同轮重复目标自动丢弃并记录系统提示。
+
+### 首轮中断摘要（V2.4）
+
+- 首轮被用户中断且仍有未发言 AI 时，生成系统摘要（已发言内容 200 字/条）。
+
+### 面板增强（V2.5）
+
+- 群重命名：`/group rename <新名称>` + 面板输入框，持久化。
+- 只读工具活动提示：发言中显示"成员 X 正在 read …"，由子 Agent 会话事件驱动。
+
+### 兼容与迁移
+
+- RPC 不传 `groupId` 时行为与 v0.2 完全一致（单群场景）。
+- v1 持久化文件无需手工迁移，首次读取自动作为 `group-1`。
+
 ## 0.2.0
 
 - @ 临时写权限：`--write`，仅当次发言可调用 `write/edit`；read-only 模式禁用。
