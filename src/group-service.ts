@@ -86,6 +86,8 @@ interface InternalGroup {
   mentionSeen: Set<string>
   /** V2.5: live tool activity of the current speaker (tool name + target). */
   toolActivity?: { memberId: string; tool: string; argsPreview: string; active: boolean }
+  /** V0.4.0-④: incremental per-member token usage (avoid O(n) rescan per bump). */
+  usageByMember: Record<string, import('./types.js').MessageUsage>
 }
 
 export interface ChatGroupServiceConfig {
@@ -278,6 +280,7 @@ export class ChatGroupService {
       proactiveRound: 0,
       proactiveCount: 0,
       mentionSeen: new Set(),
+      usageByMember: {},
       topics: [{
         id: 'topic-1',
         title: '默认话题',
@@ -993,6 +996,7 @@ export class ChatGroupService {
       proactiveRound: 0,
       proactiveCount: 0,
       mentionSeen: new Set(),
+      usageByMember: {},
       topics: [{
         id: 'topic-1',
         title: '默认话题',
@@ -1412,6 +1416,8 @@ export class ChatGroupService {
           group.messages = group.messages.map(candidate => candidate.id === message.id
             ? { ...candidate, usage: { ...usage } }
             : candidate)
+          // V0.4.0-④: refresh only this member's cumulative usage, not all messages.
+          group.usageByMember[member.id] = this.memberUsageOfMember(group, member.id)
           this.bump(group)
         },
       )
@@ -1703,7 +1709,41 @@ export class ChatGroupService {
   }
 
   /** V2.6: cumulative token usage per AI member across the group's messages. */
+  /**
+   * V2.6/V0.4.0-④: cumulative token usage per AI member. Prefers the
+   * incrementally-maintained map (O(1) per snapshot); rebuilds only when empty
+   * (e.g. a group restored before any usage event flowed).
+   */
   private memberUsageOf(group: InternalGroup): Record<string, import('./types.js').MessageUsage> {
+    if (Object.keys(group.usageByMember).length > 0) return group.usageByMember
+    return this.memberUsageOfAll(group)
+  }
+
+  /** Rebuild the usage map for one member by scanning their messages. */
+  private memberUsageOfMember(group: InternalGroup, memberId: string): import('./types.js').MessageUsage {
+    let inputTokens = 0
+    let outputTokens = 0
+    let cacheReadTokens: number | undefined
+    let cacheWriteTokens: number | undefined
+    let reasoningTokens: number | undefined
+    for (const message of group.messages) {
+      if (message.senderId !== memberId || message.usage === undefined) continue
+      inputTokens += message.usage.inputTokens
+      outputTokens += message.usage.outputTokens
+      if (message.usage.cacheReadTokens !== undefined) cacheReadTokens = (cacheReadTokens ?? 0) + message.usage.cacheReadTokens
+      if (message.usage.cacheWriteTokens !== undefined) cacheWriteTokens = (cacheWriteTokens ?? 0) + message.usage.cacheWriteTokens
+      if (message.usage.reasoningTokens !== undefined) reasoningTokens = (reasoningTokens ?? 0) + message.usage.reasoningTokens
+    }
+    return {
+      inputTokens,
+      outputTokens,
+      ...cacheReadTokens === undefined ? {} : { cacheReadTokens },
+      ...cacheWriteTokens === undefined ? {} : { cacheWriteTokens },
+      ...reasoningTokens === undefined ? {} : { reasoningTokens },
+    }
+  }
+
+  private memberUsageOfAll(group: InternalGroup): Record<string, import('./types.js').MessageUsage> {
     const usage: Record<string, import('./types.js').MessageUsage> = {}
     for (const message of group.messages) {
       if (message.usage === undefined || message.senderId === USER_MEMBER_ID || message.senderId === SYSTEM_MEMBER_ID) continue
