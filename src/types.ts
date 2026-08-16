@@ -87,6 +87,8 @@ export interface ChatGroupMessage {
 
 export interface ChatGroupSnapshot {
   readonly groupId: GroupId
+  /** V2.5: human-readable group name, defaults to the group id. */
+  readonly name?: string
   readonly sessionId: SessionId
   /** Working directory inherited from the owning dsh session, if configured. */
   readonly cwd?: string
@@ -103,6 +105,8 @@ export interface ChatGroupSnapshot {
   readonly hasMoreMessages: boolean
   readonly oldestLoadedSeq?: number
   readonly currentSpeakerId?: string
+  /** V2.5: live read-only tool activity of the current speaker. */
+  readonly toolActivity?: { memberId: string; tool: string; argsPreview: string; active: boolean }
   readonly nextSpeakerIds: readonly string[]
   readonly soloQueue: readonly SoloRequest[]
   readonly autoActive: boolean
@@ -120,6 +124,7 @@ export interface ChatGroupSnapshot {
 /** Lightweight cross-group navigation row (V2.1). */
 export interface ChatGroupSummary {
   readonly groupId: GroupId
+  readonly name?: string
   readonly status: GroupStatus
   readonly round: number
   readonly totalMessages: number

@@ -21,6 +21,7 @@ export async function speakOnce(
   prompt: string,
   signal: AbortSignal,
   onTextDelta?: (delta: string) => void,
+  onToolActivity?: (activity: { tool: string; argsPreview: string; active: boolean }) => void,
 ): Promise<SpeakOutcome> {
   if (signal.aborted) {
     return { text: '', status: 'cancelled', detail: 'speech aborted before start' }
@@ -29,6 +30,7 @@ export async function speakOnce(
   let run: SubagentRun | undefined
   let streamedText = ''
   let disposeChunkListener: (() => boolean) | undefined
+  let disposeToolListener: (() => boolean) | undefined
 
   try {
     run = await ctx.subagents.start('spawn', {
@@ -57,6 +59,20 @@ export async function speakOnce(
       })
     }
 
+    // V2.5: surface read-only tool activity (call start/result) for the panel.
+    if (childSessionId !== undefined && onToolActivity !== undefined) {
+      disposeToolListener = ctx.on('session/event', (session, event) => {
+        if (session.id !== childSessionId) return
+        if (event.type === 'tool/call') {
+          const data = event.data as { name?: string; arguments?: string }
+          onToolActivity({ tool: data.name ?? 'tool', argsPreview: previewArgs(data.arguments), active: true })
+        } else if (event.type === 'tool/result') {
+          const data = event.data as { name?: string }
+          onToolActivity({ tool: data.name ?? 'tool', argsPreview: '', active: false })
+        }
+      })
+    }
+
     const result: SubagentResult = await run.result
     if (signal.aborted) {
       return { text: streamedText, status: 'cancelled', detail: 'speech aborted' }
@@ -80,9 +96,27 @@ export async function speakOnce(
     }
   } finally {
     disposeChunkListener?.()
+    disposeToolListener?.()
     if (run !== undefined) {
       await run.dispose()
     }
+  }
+}
+
+function previewArgs(raw: string | undefined): string {
+  if (raw === undefined || raw.length === 0) return ''
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const path = typeof parsed.path === 'string'
+      ? parsed.path
+      : typeof parsed.filespec === 'string'
+        ? parsed.filespec
+        : typeof parsed.target === 'string'
+          ? parsed.target
+          : undefined
+    return path ?? raw.slice(0, 60)
+  } catch {
+    return raw.slice(0, 60)
   }
 }
 

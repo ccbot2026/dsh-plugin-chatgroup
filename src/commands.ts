@@ -8,7 +8,7 @@ type Disposer = () => unknown
 
 export function registerChatGroupCommands(ctx: Context, service: ChatGroupService): Disposer[] {
   const disposers: Disposer[] = []
-  disposers.push(ctx.commands.register(command('group', '群聊管理：create / list / use / add / remove / order / say / at / mention / edit / withdraw / status / stop / dissolve', 'create|list|use|add|remove|order|say|at|mention|edit|withdraw|status|stop|dissolve', async (invocation) => {
+  disposers.push(ctx.commands.register(command('group', '群聊管理：create / list / use / rename / add / remove / order / say / at / mention / edit / withdraw / status / stop / dissolve', 'create|list|use|rename|add|remove|order|say|at|mention|edit|withdraw|status|stop|dissolve', async (invocation) => {
     try {
       const [sub, rest] = splitSubcommand(invocation.rawInput)
       const agent = invocation.agent
@@ -21,6 +21,11 @@ export function registerChatGroupCommands(ctx: Context, service: ChatGroupServic
           const groupId = rest.trim()
           if (groupId.length === 0) return error('用法: /group use <群ID>')
           return success(formatSnapshot(service.useGroup(agent, groupId)))
+        }
+        case 'rename': {
+          const name = rest.trim()
+          if (name.length === 0) return error('用法: /group rename <新名称>')
+          return success(formatSnapshot(service.renameGroup(agent, name)))
         }
         case 'status':
           return success(formatSnapshot(service.requireSnapshot(agent)))
@@ -209,6 +214,7 @@ function helpText(): string {
     '  /group create                        创建群聊',
     '  /group list                          列出会话内所有群',
     '  /group use <群ID>                    切换默认群',
+    '  /group rename <新名称>               重命名当前群',
     '  /group status                        查看状态',
     '  /group config                        查看运行配置',
     '  /group members                       查看成员',

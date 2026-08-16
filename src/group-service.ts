@@ -45,6 +45,8 @@ import { buildMemberPersona, buildMemberPrompt } from './visibility.js'
 
 interface InternalGroup {
   readonly id: string
+  /** V2.5: display name; undefined = falls back to the group id. */
+  name?: string
   readonly sessionId: SessionId
   /** Parent-session cwd; refreshed before each speech from the live session header. */
   cwd?: string
@@ -82,6 +84,8 @@ interface InternalGroup {
   proactiveCount: number
   /** V2.3: dedupe AI @ targets within one round to prevent loops. */
   mentionSeen: Set<string>
+  /** V2.5: live tool activity of the current speaker (tool name + target). */
+  toolActivity?: { memberId: string; tool: string; argsPreview: string; active: boolean }
 }
 
 export interface ChatGroupServiceConfig {
@@ -374,6 +378,19 @@ export class ChatGroupService {
   useGroup(agent: Agent, groupId: GroupId): ChatGroupSnapshot {
     const group = this.requireGroup(agent, groupId)
     this.currentGroupId.set(agent.session.id, group.id)
+    return this.snapshotOf(group)
+  }
+
+  /** V2.5: rename a group for display. */
+  renameGroup(agent: Agent, name: string, groupId?: GroupId): ChatGroupSnapshot {
+    const group = this.requireGroup(agent, groupId)
+    const normalized = name.trim()
+    if (normalized.length === 0 || normalized.length > 40) {
+      throw new ChatGroupError('INVALID_NAME', '群名称必须是 1–40 个字符')
+    }
+    group.name = normalized
+    this.bump(group)
+    this.persistState(group)
     return this.snapshotOf(group)
   }
 
@@ -939,6 +956,7 @@ export class ChatGroupService {
 
     const group: InternalGroup = {
       id: groupId,
+      ...snapshot.name === undefined ? {} : { name: snapshot.name },
       sessionId: snapshot.sessionId,
       ...snapshot.cwd === undefined ? {} : { cwd: snapshot.cwd },
       revision,
@@ -1366,6 +1384,16 @@ export class ChatGroupService {
               : candidate)
             this.bump(group)
           },
+        (activity) => {
+          if (group.destroyed || !this.isLive(group)) return
+          group.toolActivity = {
+            memberId: member.id,
+            tool: activity.tool,
+            argsPreview: activity.argsPreview,
+            active: activity.active,
+          }
+          this.bump(group)
+        },
       )
 
       clearTimeout(timer)
@@ -1392,6 +1420,9 @@ export class ChatGroupService {
     if (message !== undefined && group.currentMessageId === message.id) {
       group.currentSpeakerId = undefined
       group.currentMessageId = undefined
+      if (group.toolActivity?.memberId === member.id) {
+        group.toolActivity = undefined
+      }
     }
 
     if (group.destroyed || !this.isLive(group)) return
@@ -1589,6 +1620,7 @@ export class ChatGroupService {
 
     return {
       groupId: group.id,
+      ...group.name === undefined ? {} : { name: group.name },
       sessionId: group.sessionId,
       ...group.cwd === undefined ? {} : { cwd: group.cwd },
       revision: group.revision,
@@ -1624,6 +1656,7 @@ export class ChatGroupService {
         autoCurrentRound: group.round - group.autoStartRound + 1,
       } : {},
       ...group.currentSpeakerId === undefined ? {} : { currentSpeakerId: group.currentSpeakerId },
+      ...group.toolActivity === undefined ? {} : { toolActivity: { ...group.toolActivity } },
       nextSpeakerIds,
       soloQueue: [...group.soloQueue],
       groups: this.groupSummaries(group.sessionId),
@@ -1639,6 +1672,7 @@ export class ChatGroupService {
         const topic = group.topics.find(candidate => candidate.id === group.currentTopicId)
         return {
           groupId: group.id,
+          ...group.name === undefined ? {} : { name: group.name },
           status: group.status,
           round: group.round,
           totalMessages: group.messages.length,

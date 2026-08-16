@@ -170,6 +170,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   })
   const configKeyRef = useRef('')
   const [showSettings, setShowSettings] = useState(true)
+  const [renameValue, setRenameValue] = useState('')
   const [olderMessages, setOlderMessages] = useState<ChatGroupMessage[]>([])
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -415,6 +416,18 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     setFilteredTopicMessages([])
     setText('')
     setMentionId('')
+  }
+
+  async function renameGroup(): Promise<void> {
+    if (sessionId === null || group === null) return
+    const name = renameValue.trim()
+    if (name.length === 0) return
+    const envelope = await run(signal => rpc.renameGroup(sessionId, name, groupId === '' ? undefined : groupId, signal))
+    if (envelope === undefined) return
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+    setRenameValue('')
   }
 
   async function stopRound(): Promise<void> {
@@ -683,7 +696,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
         createElement('div', { style: titleStyle },
           group === null
             ? '项目讨论群'
-            : `项目讨论群 · 第 ${group.round} 轮${group.blindRoundActive ? ' · 盲发中' : ''}`),
+            : `${group.name ?? group.groupId} · 第 ${group.round} 轮${group.blindRoundActive ? ' · 盲发中' : ''}`),
         group === null || group.groups.length <= 1 ? null : createElement('select', {
           style: { ...inputStyle, width: 170, fontSize: 12 },
           value: group.groupId,
@@ -709,6 +722,12 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       group.currentSpeakerId === undefined
         ? '准备发言…'
         : `${memberName(group, group.currentSpeakerId)} 发言中`) : null,
+    group?.toolActivity?.active === true
+      ? createElement('span', {
+        style: { fontSize: 12, color: '#7c3aed', whiteSpace: 'nowrap', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' },
+        title: `${memberName(group, group.toolActivity.memberId)} 正在调用 ${group.toolActivity.tool} ${group.toolActivity.argsPreview}`,
+      }, `${memberName(group, group.toolActivity.memberId)} 正在${group.toolActivity.tool}${group.toolActivity.argsPreview === '' ? '' : ` ${group.toolActivity.argsPreview}`}…`)
+      : null,
     createElement('button', { type: 'button', style: buttonStyle, onClick: () => { void exportChat() } }, '导出'),
     createElement('button', { type: 'button', style: buttonStyle, onClick: () => controller.close() }, '关闭'),
   )
@@ -851,6 +870,10 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   )
 
   const settings = group === null || !showSettings ? null : createElement('aside', { style: sidebarStyle },
+    createElement('div', { style: labelStyle }, '群名称'),
+    createElement('div', { style: { display: 'flex', gap: 6 } },
+      createElement('input', { style: inputStyle, placeholder: group.name ?? group.groupId, value: renameValue, onChange: event => setRenameValue(event.target.value) }),
+      createElement('button', { type: 'button', style: buttonStyle, disabled: busy || renameValue.trim().length === 0, onClick: () => { void renameGroup() } }, '重命名')),
     createElement('div', { style: labelStyle }, '开启新议题'),
     createElement('input', { style: inputStyle, placeholder: '新议题内容', value: topicTitle, onChange: event => setTopicTitle(event.target.value) }),
     createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void startNewTopic() } }, '结束当前并开启新议题'),

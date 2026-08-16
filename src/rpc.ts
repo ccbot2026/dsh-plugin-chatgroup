@@ -176,6 +176,12 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }
 
+        case 'groups.rename': {
+          const name = stringField(rawPayload, 'name') ?? ''
+          const snapshot = service.renameGroup(agent, name, groupIdField(rawPayload))
+          return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
+        }
+
         case 'topic.messages': {
           const topicId = stringField(rawPayload, 'topicId') ?? ''
           if (topicId.length === 0) return fail('BAD_REQUEST', 'topicId is required')

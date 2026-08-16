@@ -108,6 +108,10 @@ export class ChatGroupRpcClient {
     return call(this.rpc, 'groups.use', { sessionId, groupId }, signal)
   }
 
+  renameGroup(sessionId: string, name: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'groups.rename', { sessionId, name, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
   addMember(sessionId: string, member: CreateAiMemberInput, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
     return call(this.rpc, 'members.add', { sessionId, member, ...groupId === undefined ? {} : { groupId } }, signal)
   }
