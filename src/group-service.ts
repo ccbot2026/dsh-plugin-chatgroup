@@ -1151,6 +1151,31 @@ export class ChatGroupService {
     return message
   }
 
+  /**
+   * V2.4: when the first round is interrupted before every AI spoke, emit a
+   * system summary of what was already produced so later rounds stay oriented.
+   */
+  private appendFirstRoundInterruptSummary(group: InternalGroup): void {
+    const spoke = group.messages.filter(message =>
+      message.round === 1
+      && message.senderId !== USER_MEMBER_ID
+      && message.senderId !== SYSTEM_MEMBER_ID
+      && message.status === 'completed'
+      && message.text.trim().length > 0)
+    if (spoke.length === 0) return
+
+    const lines = spoke.map(message => {
+      const sender = group.members.find(member => member.id === message.senderId)?.name ?? message.senderId
+      const excerpt = message.text.trim().slice(0, 200)
+      return `${sender}：${excerpt}`
+    })
+    this.appendSystemMessage(
+      group,
+      `首轮已由用户中断，以下为已产生的发言摘要：\n${lines.join('\n')}`,
+      group.round,
+    )
+  }
+
   private appendUserMessage(
     group: InternalGroup,
     text: string,
@@ -1477,6 +1502,12 @@ export class ChatGroupService {
       group.roundOneClosed = true
     }
     this.closeCurrentTopicRecord(group)
+
+    // V2.4: first round interrupted with AI members still pending — summarize
+    // what was produced so the next round's AI can stay oriented.
+    if (group.round === 1 && group.stopRequested) {
+      this.appendFirstRoundInterruptSummary(group)
+    }
 
     let autoContinue = false
     if (!group.stopRequested && group.autoActive) {
