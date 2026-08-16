@@ -54,6 +54,8 @@ export interface SoloRequest {
   readonly depth: number
   /** V2.3: true when this is a proactive-consult request (may yield a remark). */
   readonly proactive?: boolean
+  /** V0.4.1: true when this request produces a first-round interrupt summary. */
+  readonly summary?: boolean
 }
 
 export interface ChatTopic {

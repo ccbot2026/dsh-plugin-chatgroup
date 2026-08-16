@@ -88,6 +88,8 @@ interface InternalGroup {
   toolActivity?: { memberId: string; tool: string; argsPreview: string; active: boolean }
   /** V0.4.0-④: incremental per-member token usage (avoid O(n) rescan per bump). */
   usageByMember: Record<string, import('./types.js').MessageUsage>
+  /** V0.4.1: true once the first-round interrupt summary has been produced. */
+  summaryDone: boolean
 }
 
 export interface ChatGroupServiceConfig {
@@ -281,6 +283,7 @@ export class ChatGroupService {
       proactiveCount: 0,
       mentionSeen: new Set(),
       usageByMember: {},
+      summaryDone: false,
       topics: [{
         id: 'topic-1',
         title: '默认话题',
@@ -997,6 +1000,7 @@ export class ChatGroupService {
       proactiveCount: 0,
       mentionSeen: new Set(),
       usageByMember: {},
+      summaryDone: false,
       topics: [{
         id: 'topic-1',
         title: '默认话题',
@@ -1182,32 +1186,6 @@ export class ChatGroupService {
     return message
   }
 
-  /**
-   * V2.4: when the first round is interrupted before every AI spoke, emit a
-   * system summary of what was already produced so later rounds stay oriented.
-   */
-  private appendFirstRoundInterruptSummary(group: InternalGroup): void {
-    const spoke = group.messages.filter(message =>
-      message.round === 1
-      && (message.topicId === undefined ? 'topic-1' : message.topicId) === group.currentTopicId
-      && message.senderId !== USER_MEMBER_ID
-      && message.senderId !== SYSTEM_MEMBER_ID
-      && message.status === 'completed'
-      && message.text.trim().length > 0)
-    if (spoke.length === 0) return
-
-    const lines = spoke.map(message => {
-      const sender = group.members.find(member => member.id === message.senderId)?.name ?? message.senderId
-      const excerpt = message.text.trim().slice(0, 200)
-      return `${sender}：${excerpt}`
-    })
-    this.appendSystemMessage(
-      group,
-      `首轮已由用户中断，以下为已产生的发言摘要：\n${lines.join('\n')}`,
-      group.round,
-    )
-  }
-
   private appendUserMessage(
     group: InternalGroup,
     text: string,
@@ -1242,9 +1220,12 @@ export class ChatGroupService {
   private async loop(agent: Agent, group: InternalGroup): Promise<void> {
     try {
       while (this.isLive(group) && !group.destroyed) {
+        // finishGroup may queue a summary (V0.4.1) — when it does, fall through
+        // to pickNext instead of re-checking the stop flag (which would drop it).
         if (group.stopRequested || group.status !== 'running') {
-          this.finishGroup(group)
-          return
+          const progressed = this.finishGroup(group, agent)
+          if (!progressed) return
+          if (group.soloQueue.length === 0 && !group.proactiveActive) return
         }
 
         const nextRequest = this.pickNext(group)
@@ -1258,7 +1239,7 @@ export class ChatGroupService {
           group,
           nextRequest.memberId,
           nextRequest.writeAccess,
-          nextRequest.proactive === true ? 'proactive' : nextRequest.depth > 0 ? 'mention' : 'reply',
+          nextRequest.summary === true ? 'summary' : nextRequest.proactive === true ? 'proactive' : nextRequest.depth > 0 ? 'mention' : 'reply',
           nextRequest.depth,
         )
       }
@@ -1299,7 +1280,7 @@ export class ChatGroupService {
     group: InternalGroup,
     memberId: string,
     writeAccess = false,
-    intent: 'reply' | 'proactive' | 'mention' = 'reply',
+    intent: 'reply' | 'proactive' | 'mention' | 'summary' = 'reply',
     depth = 0,
   ): Promise<void> {
     const member = group.members.find(candidate => candidate.id === memberId && candidate.kind === 'ai')
@@ -1315,7 +1296,8 @@ export class ChatGroupService {
     // V2.3 proactive consult: do NOT create a durable message yet. The AI's
     // reply either yields one remark (appended after) or is a decline.
     const proactive = intent === 'proactive'
-    const message: ChatGroupMessage | undefined = proactive ? undefined : {
+    const summarizing = intent === 'summary'
+    const message: ChatGroupMessage | undefined = proactive || summarizing ? undefined : {
       id: `msg-${randomUUID()}`,
       seq: group.messages.length,
       topicId: group.currentTopicId,
@@ -1377,10 +1359,12 @@ export class ChatGroupService {
       const persona = buildMemberPersona(member)
       const prompt = intent === 'proactive'
         ? this.buildProactivePrompt(snapshot, member, group.settings.maxPromptMessages)
-        : buildMemberPrompt(snapshot, member, group.settings.maxPromptMessages, {
-          writeAccess,
-          ...intent === 'mention' ? { intent: 'mention' as const, mentionTargetName: undefined } : {},
-        })
+        : intent === 'summary'
+          ? this.buildSummaryPrompt(snapshot, member)
+          : buildMemberPrompt(snapshot, member, group.settings.maxPromptMessages, {
+            writeAccess,
+            ...intent === 'mention' ? { intent: 'mention' as const, mentionTargetName: undefined } : {},
+          })
 
       outcome = await speakOnce(
         this.ctx,
@@ -1458,6 +1442,11 @@ export class ChatGroupService {
       return
     }
 
+    if (summarizing) {
+      this.settleSummary(group, outcome)
+      return
+    }
+
     if (message === undefined) return
     const updated = group.messages.find(candidate => candidate.id === message.id)
     const finalMessage: ChatGroupMessage | undefined = updated === undefined ? undefined : {
@@ -1521,6 +1510,78 @@ export class ChatGroupService {
     this.resolveAiMentions(group, message, depth)
   }
 
+  /** V0.4.1: summarizer prompt — synthesize the interrupted first round. */
+  private buildSummaryPrompt(group: ChatGroupSnapshot, member: ChatGroupMember): string {
+    const spoke = group.messages
+      .filter(message =>
+        message.round === 1
+        && (message.topicId === undefined ? 'topic-1' : message.topicId) === group.currentTopicId
+        && message.senderId !== USER_MEMBER_ID
+        && message.senderId !== SYSTEM_MEMBER_ID
+        && message.status === 'completed'
+        && message.text.trim().length > 0)
+      .map(message => {
+        const sender = group.members.find(member => member.id === message.senderId)?.name ?? message.senderId
+        return `【${sender}】\n${message.text.trim()}`
+      })
+    return [
+      `你是群聊成员“${member.name}”。`,
+      '首轮讨论被用户中断，你需要为后续轮次生成一份**真正的摘要**（不是截断原文）。',
+      '要求：',
+      '- 用 2–4 句话概括已产生的发言要点、分歧或结论；',
+      '- 保留关键观点与不同立场，不丢失重要信息；',
+      '- 不要逐条复述原文，不要输出标题、编号列表或“以下是摘要”之类的开场白；',
+      '- 直接输出摘要正文。',
+      '',
+      '=== 首轮已产生的发言 ===',
+      spoke.join('\n\n'),
+      '',
+      '请输出摘要：',
+    ].join('\n')
+  }
+
+  /** V0.4.1: record the summarizer's output as a system message. */
+  private settleSummary(group: InternalGroup, outcome: Awaited<ReturnType<typeof speakOnce>>): void {
+    group.summaryDone = true
+    const text = outcome.text.trim()
+    if (text.length === 0) {
+      this.appendTruncatedSummary(group)
+      return
+    }
+    this.appendSystemMessage(group, `首轮已由用户中断，以下为发言摘要：\n${text}`, group.round)
+  }
+
+  /** V2.4 fallback: mechanical 200-char-per-remark excerpt when no AI can summarize. */
+  private appendTruncatedSummary(group: InternalGroup): void {
+    const spoke = group.messages.filter(message =>
+      message.round === 1
+      && (message.topicId === undefined ? 'topic-1' : message.topicId) === group.currentTopicId
+      && message.senderId !== USER_MEMBER_ID
+      && message.senderId !== SYSTEM_MEMBER_ID
+      && message.status === 'completed'
+      && message.text.trim().length > 0)
+    if (spoke.length === 0) return
+    const lines = spoke.map(message => {
+      const sender = group.members.find(member => member.id === message.senderId)?.name ?? message.senderId
+      const excerpt = message.text.trim().slice(0, 200)
+      return `${sender}：${excerpt}`
+    })
+    this.appendSystemMessage(
+      group,
+      `首轮已由用户中断，以下为已产生的发言摘要：\n${lines.join('\n')}`,
+      group.round,
+    )
+  }
+
+  /** First AI member in speaker order (used as the summarizer). */
+  private firstAiMember(group: InternalGroup): ChatGroupMember | undefined {
+    for (const id of group.speakerOrder) {
+      const member = group.members.find(candidate => candidate.id === id && candidate.kind === 'ai')
+      if (member !== undefined) return member
+    }
+    return group.members.find(candidate => candidate.kind === 'ai')
+  }
+
   /** V2.3: parse @mentions inside an AI message; enqueue solo replies with depth limits. */
   private resolveAiMentions(group: InternalGroup, message: ChatGroupMessage, depth: number): void {
     if (group.settings.maxAiMentionDepth <= 0) return
@@ -1560,10 +1621,31 @@ export class ChatGroupService {
     }
     this.closeCurrentTopicRecord(group)
 
-    // V2.4: first round interrupted with AI members still pending — summarize
-    // what was produced so the next round's AI can stay oriented.
-    if (group.round === 1 && group.stopRequested) {
-      this.appendFirstRoundInterruptSummary(group)
+    // V2.4/V0.4.1: first round interrupted with AI members still pending —
+    // queue a real summarization pass (uses an AI member) instead of a
+    // mechanical 200-char truncation. Falls back to truncation only when no
+    // AI member is available to summarize.
+    if (group.round === 1 && group.stopRequested && !group.summaryDone) {
+      const summarizer = this.firstAiMember(group)
+      const hasRemarks = group.messages.some(message =>
+        message.round === 1
+        && (message.topicId === undefined ? 'topic-1' : message.topicId) === group.currentTopicId
+        && message.senderId !== USER_MEMBER_ID
+        && message.senderId !== SYSTEM_MEMBER_ID
+        && message.status === 'completed'
+        && message.text.trim().length > 0)
+      if (hasRemarks && summarizer !== undefined) {
+        group.summaryDone = true
+        group.mode = 'solo'
+        group.status = 'running'
+        group.soloQueue = [{ memberId: summarizer.id, writeAccess: false, depth: 0, summary: true }]
+        this.bump(group)
+        this.persistState(group)
+        return true
+      }
+      if (hasRemarks) {
+        this.appendTruncatedSummary(group)
+      }
     }
 
     let autoContinue = false

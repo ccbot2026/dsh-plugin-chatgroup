@@ -22,10 +22,14 @@ function makeInterruptHarness() {
         const promptText = request.prompt[0].text
         const name = /你是群聊成员“([^”]+)”/.exec(promptText)?.[1] ?? 'AI'
         if (name === 'Alice') {
+          // V0.4.1: the summarizer pass answers with a REAL summary, distinct
+          // from a normal round reply.
+          const isSummary = promptText.includes('首轮讨论被用户中断')
+          const text = isSummary ? '真摘要：Alice 与 Bob 就议题存在分歧，Alice 主张方案 A。' : 'Alice 的关键观点'
           return {
             id: request.parent.session.id,
             localAgent: undefined,
-            result: Promise.resolve({ output: [{ type: 'text', text: 'Alice 的关键观点' }], stopReason: 'completed' }),
+            result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
             dispose: async () => {},
           }
         }
@@ -81,8 +85,9 @@ test('V2.4: interrupted first round emits a system summary of produced remarks',
 
   const summary = idle.messages.find(m => m.senderId === 'system' && m.text.includes('首轮已由用户中断'))
   assert.ok(summary, 'expected an interrupt summary')
-  assert.ok(summary.text.includes('Alice'))
-  assert.ok(summary.text.includes('关键观点'))
+  // V0.4.1: the summary is a REAL summarization (distinct text from the reply).
+  assert.ok(summary.text.includes('真摘要'))
+  assert.ok(!summary.text.includes('Alice 的关键观点'))
 })
 
 test('V2.4: clean (non-interrupted) first round produces no summary', async () => {
@@ -145,8 +150,8 @@ test('V2.4: interrupt summary only includes current-topic messages (no cross-top
 
   const summary = idle2.messages.find(m => m.senderId === 'system' && m.text.includes('首轮已由用户中断'))
   assert.ok(summary, 'expected an interrupt summary for topic-2')
-  // The summary must NOT contain topic-1's Alice remark text.
+  // V0.4.1: real summary text (topic-2 only, no topic-1 leak).
+  assert.ok(summary.text.includes('真摘要'))
   assert.ok(!summary.text.includes('topic-1 议题'))
-  // It should contain topic-2's Alice remark.
-  assert.ok(summary.text.includes('Alice 的关键观点'))
 })
+
