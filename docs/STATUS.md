@@ -1,13 +1,14 @@
 # 项目状态压缩版
 
 > V2 阶段总结：`docs/阶段总结-v0.3.0.md`
+> 0.4.x 阶段总结：`docs/阶段总结-v0.4.x.md`
 > V1 阶段总结：`docs/阶段总结-v0.2.0.md`
 > V2 变更：`CHANGELOG.md`（0.3.0 章节）
 > V2 计划外增量：`docs/v0.3增量需求记录.md`
 > 实施计划：`docs/plan.md`
 
-- 项目：dsh-plugin-chatgroup v0.4.0
-- 测试：57/57 通过
+- 项目：dsh-plugin-chatgroup v0.4.1
+- 测试：57/57 通过（0.4.x 阶段）
 - 持久化：`<项目>/.dsh/chatgroup/<sessionId>-<groupId>.jsonl`（v2；v1 自动迁移为 `group-1`）
 - 安装：`dsh plugin --profile web add /path/to/dsh-plugin-chatgroup`
 - 启动：`dsh --profile dsh-chatgroup --port 3081`
