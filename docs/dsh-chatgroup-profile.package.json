@@ -1,0 +1,16 @@
+{
+  "name": "dsh-profile-dsh-chatgroup",
+  "private": true,
+  "dependencies": {
+    "dsh-plugin-chatgroup": "link:/home/sll/projects/dsh-plugin-chatgroup"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "dsh-plugin-chatgroup",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

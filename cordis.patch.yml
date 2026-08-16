@@ -1,0 +1,6 @@
+# dsh-plugin-chatgroup bundle patch: mounts the host-side group-chat plugin.
+#
+# Install: `dsh plugin --profile <name> add dsh-plugin-chatgroup`
+- insert:
+    - id: chatgroup
+      name: dsh-plugin-chatgroup

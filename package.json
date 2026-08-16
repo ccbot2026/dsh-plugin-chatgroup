@@ -1,0 +1,74 @@
+{
+  "name": "dsh-plugin-chatgroup",
+  "version": "0.2.0",
+  "description": "Group chat plugin for DeepSeek Harness (dsh): one human + up to five AI members discussing project requirements in rounds.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "group-chat",
+    "multi-agent"
+  ],
+  "scripts": {
+    "build:host": "tsc -p tsconfig.json",
+    "build:client": "tsc -p tsconfig.client.json && esbuild src/client/index.ts --bundle --format=cjs --platform=browser --target=es2022 --jsx=transform --jsx-factory=createElement --jsx-fragment=Fragment --external:react --external:react/jsx-runtime --external:react-dom --external:@deepseek-ai/cordis --external:@deepseek-ai/dsh-client-ui-slots --external:@deepseek-ai/dsh-client-runtime/client --outfile=dist/client.js --banner:js='window.__ModuleLoader__.load({ id: \"dsh-plugin-chatgroup\", factory: (require) => { var module = { exports: {} }; var exports = module.exports;' --footer:js='return module.exports; } });'",
+    "build": "npm run build:host && npm run build:client",
+    "prepare": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^18.3.23",
+    "esbuild": "^0.25.6",
+    "typescript": "^5.0.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-connection": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-apiproxy": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-subagent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": "./dist/client.js",
+    "./package.json": "./package.json"
+  }
+}

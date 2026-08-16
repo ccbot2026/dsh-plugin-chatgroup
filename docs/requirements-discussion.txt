@@ -1,0 +1,63 @@
+# 开发 deepseek-harness 插件 chat-group 的讨论
+
+## 环境信息
+deepseek-harness 源码地址: deepseek-harness
+插件项目地址: dsh-plugin-chatgroup
+
+
+需求讨论 --  deepseek-harness 插件开发 -- 群聊插件;
+
+插件用途: 
+  提供群聊功能, 类似微信聊天群, 不同的是成员是[用户]和多个AI(暂定限制最多5个AI);
+  
+为什么开发这个插件: 
+  项目开发期间常常与多个AI讨论项目需求/方案, 但是需要在多个聊天窗口之间来回切换, 还需要手动复制粘贴帮AI传递消息. 如果有群聊功能, 就省事多了;
+  
+需求明细: 
+  成员角色分两种 管理员/普通用户, 管理员可以添加/移除成员. 也可以指定成员为管理员;  
+  使用 TypeScript 开发;
+  管理员设定发言顺序, 成员依次发言;
+  群成员可以@其他成员指定其进行发言(此项功能管理员可以开启/关闭);
+  管理员可以设定群聊成员是否消息可见(第一轮发言时希望成员能够各抒己见, 不被其他成员发言影响);
+  
+  
+目前想法是这些, 我们来讨论下
+
+
+这是对你上一个发言中疑问的回复:
+1. 是, 1人+多个AI;
+2. AI成员需要能够探索项目文件, 因此不能是纯聊天员; 但是可以只给 ReadOnly 权限; 我记得 deepseek-harness 是可以接其他大模型的, 是否可以从这里入手;
+3. 属于当前 dsh 会话, 不跨会话; "一个会话内可有多个群" --> 这个是什么意思?
+4. 用户发言后, AI依次发言, 全部发言完成视为一轮; 用户可以插话, 后续AI仍然依次发言; "用户可以用 /group stop 中断"这个我同意, 但是在 web ui 中要改成结束按钮;
+5. 你的理解没错, 第一轮需要盲发, 后续不做限制;
+  5.1 用户始终能看到所有消息;
+  5.2 只有第一轮盲发;
+  5.3 "我建议调度器过滤，记录完整但注入时裁剪。" -- 赞同;
+6. 设想场景: 用户对某个AI的发言有疑问, @他进行发言, 其他AI不需要进行回应;
+7. 不用限制 maxToken, 超时默认5分钟, 可配置;
+8. deepseek-harness 没有 tui 只有 web 端, 直接做 Web UI;
+---
+
+## 最终确认
+
+1. V1 一个会话只允许 1 个群（数据模型预留多群）。
+2. 持久化选 A：内存态，不修改 deepseek-harness 源码。
+   - 因此不写自定义 session 事件，避免重启加载被 persistence 拒绝。
+   - 群状态存进程内存，Web UI 通过自定义 RPC channel `/chatgroup` 读取和操作。
+3. Web UI 用独立群聊面板/抽屉（header 按钮 + shell.overlay）。
+
+详细需求与技术方案见: docs/chatgroup-prd-tech-design.md
+
+## 开发进度
+
+- M1 已完成: Host 命令版（group-service / scheduler / visibility / ai-speaker / /group 命令），单测 6 项通过。
+- 下一步: M2（/chatgroup RPC + Web UI 面板）。
+
+- M2 已完成: /chatgroup RPC channel（snapshot/wait/send/at/stop/members/settings/catalog）+ Web UI 面板 + 长轮询。
+- M3 已完成: 9 项自动化测试通过；npm pack 通过；使用 @deepseek-ai/dsh@0.1.0-rc.6 创建真实 profile 启动 Web 服务，确认 boot graph 发现本插件 client bundle、/chatgroup RPC 路由可响应。
+
+## 最终验证补充
+
+- npm tarball 安装到新 profile 后，Web 启动页 boot graph 正常包含本插件 client bundle。
+- 在真实 live session 上通过 /chatgroup RPC 完成 create -> members.add -> send -> snapshot 全链路。
+- send 实际触发了 ctx.subagents.start('spawn')；当前环境未配置模型凭证，子 Agent 以 error 结束，调度器正确标记 failed 并结束本轮，未崩溃。
