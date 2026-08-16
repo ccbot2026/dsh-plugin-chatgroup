@@ -255,6 +255,10 @@ export function registerChatGroupRpc(ctx: Context, service: ChatGroupService): (
           if (typeof rawPayload.waitTimeoutMs === 'number') patch.waitTimeoutMs = rawPayload.waitTimeoutMs
           if (typeof rawPayload.maxPromptMessages === 'number') patch.maxPromptMessages = rawPayload.maxPromptMessages
           if (typeof rawPayload.messagePageSize === 'number') patch.messagePageSize = rawPayload.messagePageSize
+          if (typeof rawPayload.maxEditableMessages === 'number') patch.maxEditableMessages = rawPayload.maxEditableMessages
+          if (typeof rawPayload.aiProactive === 'boolean') patch.aiProactive = rawPayload.aiProactive
+          if (typeof rawPayload.maxProactivePerRound === 'number') patch.maxProactivePerRound = rawPayload.maxProactivePerRound
+          if (typeof rawPayload.maxAiMentionDepth === 'number') patch.maxAiMentionDepth = rawPayload.maxAiMentionDepth
           const snapshot = service.updateConfig(agent, patch, groupIdField(rawPayload))
           return ok<SnapshotResponse>({ revision: snapshot.revision, group: snapshot })
         }

@@ -2,7 +2,18 @@ import type { Context } from '@deepseek-ai/cordis'
 import { registerChatGroupCommands } from './commands.js'
 import { ChatGroupService } from './group-service.js'
 import { registerChatGroupRpc } from './rpc.js'
-import { DEFAULT_MAX_AI, DEFAULT_MAX_GROUPS, DEFAULT_MAX_PROMPT_MESSAGES, DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_READONLY_TOOLS, DEFAULT_SPEECH_TIMEOUT_MS, DEFAULT_WAIT_TIMEOUT_MS } from './types.js'
+import {
+  DEFAULT_AI_PROACTIVE,
+  DEFAULT_MAX_AI,
+  DEFAULT_MAX_AI_MENTION_DEPTH,
+  DEFAULT_MAX_GROUPS,
+  DEFAULT_MAX_PROACTIVE_PER_ROUND,
+  DEFAULT_MAX_PROMPT_MESSAGES,
+  DEFAULT_MESSAGE_PAGE_SIZE,
+  DEFAULT_READONLY_TOOLS,
+  DEFAULT_SPEECH_TIMEOUT_MS,
+  DEFAULT_WAIT_TIMEOUT_MS,
+} from './types.js'
 import type { ChatGroupConfig } from './types.js'
 
 export const name = 'chatgroup'
@@ -17,6 +28,10 @@ export function apply(ctx: Context, config: Partial<ChatGroupConfig> = {}): void
     waitTimeoutMs: config.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
     maxPromptMessages: config.maxPromptMessages ?? DEFAULT_MAX_PROMPT_MESSAGES,
     messagePageSize: config.messagePageSize ?? DEFAULT_MESSAGE_PAGE_SIZE,
+    maxEditableMessages: config.maxEditableMessages,
+    aiProactive: config.aiProactive ?? DEFAULT_AI_PROACTIVE,
+    maxProactivePerRound: config.maxProactivePerRound ?? DEFAULT_MAX_PROACTIVE_PER_ROUND,
+    maxAiMentionDepth: config.maxAiMentionDepth ?? DEFAULT_MAX_AI_MENTION_DEPTH,
   })
 
   const commandDisposers = registerChatGroupCommands(ctx, service)

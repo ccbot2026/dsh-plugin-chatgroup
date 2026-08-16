@@ -13,8 +13,11 @@ import {
 } from './persistence.js'
 import { ChatGroupError } from './errors.js'
 import {
+  DEFAULT_AI_PROACTIVE,
   DEFAULT_MAX_AI,
+  DEFAULT_MAX_AI_MENTION_DEPTH,
   DEFAULT_MAX_GROUPS,
+  DEFAULT_MAX_PROACTIVE_PER_ROUND,
   DEFAULT_MAX_PROMPT_MESSAGES,
   DEFAULT_MESSAGE_PAGE_SIZE,
   DEFAULT_READONLY_TOOLS,
@@ -72,6 +75,13 @@ interface InternalGroup {
   topicCounter: number
   topics: ChatTopic[]
   sandboxMode: string
+  /** V2.3: proactive phase state. */
+  proactiveActive: boolean
+  proactiveQueue: string[]
+  proactiveRound: number
+  proactiveCount: number
+  /** V2.3: dedupe AI @ targets within one round to prevent loops. */
+  mentionSeen: Set<string>
 }
 
 export interface ChatGroupServiceConfig {
@@ -83,6 +93,9 @@ export interface ChatGroupServiceConfig {
   readonly maxPromptMessages?: number
   readonly messagePageSize?: number
   readonly maxEditableMessages?: number
+  readonly aiProactive?: boolean
+  readonly maxProactivePerRound?: number
+  readonly maxAiMentionDepth?: number
 }
 
 interface RevisionWaiter {
@@ -140,6 +153,9 @@ export class ChatGroupService {
       maxPromptMessages,
       messagePageSize,
       maxEditableMessages,
+      aiProactive: config.aiProactive ?? DEFAULT_AI_PROACTIVE,
+      maxProactivePerRound: config.maxProactivePerRound ?? DEFAULT_MAX_PROACTIVE_PER_ROUND,
+      maxAiMentionDepth: config.maxAiMentionDepth ?? DEFAULT_MAX_AI_MENTION_DEPTH,
     }
   }
 
@@ -173,6 +189,9 @@ export class ChatGroupService {
       maxPromptMessages: this.config.maxPromptMessages,
       messagePageSize: this.config.messagePageSize,
       maxEditableMessages: this.config.maxEditableMessages,
+      aiProactive: this.config.aiProactive,
+      maxProactivePerRound: this.config.maxProactivePerRound,
+      maxAiMentionDepth: this.config.maxAiMentionDepth,
     }
   }
 
@@ -247,6 +266,11 @@ export class ChatGroupService {
       currentTopicId: 'topic-1',
       topicCounter: 1,
       sandboxMode: this.readSandboxMode(agent),
+      proactiveActive: false,
+      proactiveQueue: [],
+      proactiveRound: 0,
+      proactiveCount: 0,
+      mentionSeen: new Set(),
       topics: [{
         id: 'topic-1',
         title: '默认话题',
@@ -263,6 +287,9 @@ export class ChatGroupService {
         maxPromptMessages: this.config.maxPromptMessages,
         messagePageSize: this.config.messagePageSize,
         maxEditableMessages: this.config.maxEditableMessages,
+        aiProactive: this.config.aiProactive,
+        maxProactivePerRound: this.config.maxProactivePerRound,
+        maxAiMentionDepth: this.config.maxAiMentionDepth,
       },
     }
 
@@ -475,6 +502,9 @@ export class ChatGroupService {
       maxPromptMessages: group.settings.maxPromptMessages,
       messagePageSize: group.settings.messagePageSize,
       maxEditableMessages: group.settings.maxEditableMessages,
+      aiProactive: group.settings.aiProactive,
+      maxProactivePerRound: group.settings.maxProactivePerRound,
+      maxAiMentionDepth: group.settings.maxAiMentionDepth,
     }
   }
 
@@ -493,6 +523,9 @@ export class ChatGroupService {
       maxPromptMessages: patch.maxPromptMessages ?? group.settings.maxPromptMessages,
       messagePageSize: patch.messagePageSize ?? group.settings.messagePageSize,
       maxEditableMessages: patch.maxEditableMessages ?? group.settings.maxEditableMessages,
+      aiProactive: patch.aiProactive ?? group.settings.aiProactive,
+      maxProactivePerRound: patch.maxProactivePerRound ?? group.settings.maxProactivePerRound,
+      maxAiMentionDepth: patch.maxAiMentionDepth ?? group.settings.maxAiMentionDepth,
     }
 
     if (!Number.isSafeInteger(next.maxAi) || next.maxAi < 1 || next.maxAi > 5) {
@@ -522,6 +555,12 @@ export class ChatGroupService {
     }
     if (!Number.isSafeInteger(next.maxEditableMessages) || next.maxEditableMessages < 0) {
       throw new ChatGroupError('INVALID_ROUNDS', 'maxEditableMessages 必须是非负整数')
+    }
+    if (!Number.isSafeInteger(next.maxProactivePerRound) || next.maxProactivePerRound < 0) {
+      throw new ChatGroupError('INVALID_ROUNDS', 'maxProactivePerRound 必须是非负整数')
+    }
+    if (!Number.isSafeInteger(next.maxAiMentionDepth) || next.maxAiMentionDepth < 0) {
+      throw new ChatGroupError('INVALID_ROUNDS', 'maxAiMentionDepth 必须是非负整数')
     }
 
     group.settings = next
@@ -628,7 +667,7 @@ export class ChatGroupService {
     const round = group.mode === 'round' ? group.round : 0
     const writeAccess = options.writeAccess === true
     this.appendUserMessage(group, normalized, [target.id], round, writeAccess)
-    group.soloQueue.push({ memberId: target.id, writeAccess })
+    group.soloQueue.push({ memberId: target.id, writeAccess, depth: 0 })
     this.kick(agent, group)
     return this.snapshotOf(group)
   }
@@ -922,6 +961,11 @@ export class ChatGroupService {
       currentTopicId: 'topic-1',
       topicCounter: 1,
       sandboxMode: 'read-only',
+      proactiveActive: false,
+      proactiveQueue: [],
+      proactiveRound: 0,
+      proactiveCount: 0,
+      mentionSeen: new Set(),
       topics: [{
         id: 'topic-1',
         title: '默认话题',
@@ -938,6 +982,9 @@ export class ChatGroupService {
         maxPromptMessages: this.config.maxPromptMessages,
         messagePageSize: this.config.messagePageSize,
         maxEditableMessages: this.config.maxEditableMessages,
+        aiProactive: this.config.aiProactive,
+        maxProactivePerRound: this.config.maxProactivePerRound,
+        maxAiMentionDepth: this.config.maxAiMentionDepth,
       },
     }
 
@@ -1149,7 +1196,14 @@ export class ChatGroupService {
           return
         }
 
-        await this.speakOne(agent, group, nextRequest.memberId, nextRequest.writeAccess)
+        await this.speakOne(
+          agent,
+          group,
+          nextRequest.memberId,
+          nextRequest.writeAccess,
+          nextRequest.proactive === true ? 'proactive' : nextRequest.depth > 0 ? 'mention' : 'reply',
+          nextRequest.depth,
+        )
       }
     } catch (error: unknown) {
       this.ctx.logger('chatgroup').warn(
@@ -1169,15 +1223,28 @@ export class ChatGroupService {
       this.bump(group)
       return solo
     }
+    // V2.3 proactive phase: consult each AI in order for an optional remark.
+    if (group.proactiveActive && group.proactiveQueue.length > 0) {
+      const memberId = group.proactiveQueue.shift()!
+      this.bump(group)
+      return { memberId, writeAccess: false, depth: 0, proactive: true }
+    }
     if (group.mode !== 'round') return undefined
     const next = group.speakerOrder[group.roundCursor]
     if (next === undefined) return undefined
     group.roundCursor += 1
     this.bump(group)
-    return { memberId: next, writeAccess: false }
+    return { memberId: next, writeAccess: false, depth: 0 }
   }
 
-  private async speakOne(agent: Agent, group: InternalGroup, memberId: string, writeAccess = false): Promise<void> {
+  private async speakOne(
+    agent: Agent,
+    group: InternalGroup,
+    memberId: string,
+    writeAccess = false,
+    intent: 'reply' | 'proactive' | 'mention' = 'reply',
+    depth = 0,
+  ): Promise<void> {
     const member = group.members.find(candidate => candidate.id === memberId && candidate.kind === 'ai')
     if (member?.ai === undefined) return
     const writeTools = ['write', 'edit']
@@ -1188,7 +1255,10 @@ export class ChatGroupService {
       }
       : member.ai
 
-    const message: ChatGroupMessage = {
+    // V2.3 proactive consult: do NOT create a durable message yet. The AI's
+    // reply either yields one remark (appended after) or is a decline.
+    const proactive = intent === 'proactive'
+    const message: ChatGroupMessage | undefined = proactive ? undefined : {
       id: `msg-${randomUUID()}`,
       seq: group.messages.length,
       topicId: group.currentTopicId,
@@ -1200,11 +1270,13 @@ export class ChatGroupService {
       status: 'speaking',
       createdAt: Date.now(),
     }
-    group.messages = [...group.messages, message]
-    group.currentSpeakerId = member.id
-    group.currentMessageId = message.id
-    this.bump(group)
-    this.persistMessage(group, message)
+    if (message !== undefined) {
+      group.messages = [...group.messages, message]
+      group.currentSpeakerId = member.id
+      group.currentMessageId = message.id
+      this.bump(group)
+      this.persistMessage(group, message)
+    }
 
     const liveCwd = agent.session.header?.cwd
     if (liveCwd !== undefined && liveCwd !== group.cwd) {
@@ -1214,18 +1286,20 @@ export class ChatGroupService {
     }
 
     if (liveCwd === undefined) {
-      group.messages = group.messages.map(candidate => candidate.id === message.id
-        ? {
-          ...candidate,
-          status: 'failed' as const,
-          error: '当前 dsh 会话没有工作目录，无法创建只读子 Agent；请使用带项目目录的会话',
-          completedAt: Date.now(),
-        }
-        : candidate)
-      group.currentSpeakerId = undefined
-      group.currentMessageId = undefined
-      this.bump(group)
-      this.persistMessage(group, group.messages.find(candidate => candidate.id === message.id)!)
+      if (message !== undefined) {
+        group.messages = group.messages.map(candidate => candidate.id === message.id
+          ? {
+            ...candidate,
+            status: 'failed' as const,
+            error: '当前 dsh 会话没有工作目录，无法创建只读子 Agent；请使用带项目目录的会话',
+            completedAt: Date.now(),
+          }
+          : candidate)
+        group.currentSpeakerId = undefined
+        group.currentMessageId = undefined
+        this.bump(group)
+        this.persistMessage(group, group.messages.find(candidate => candidate.id === message.id)!)
+      }
       return
     }
 
@@ -1244,25 +1318,29 @@ export class ChatGroupService {
 
       const snapshot = this.snapshotOf(group, { fullMessages: true })
       const persona = buildMemberPersona(member)
-      const prompt = buildMemberPrompt(snapshot, member, group.settings.maxPromptMessages, { writeAccess })
+      const prompt = intent === 'proactive'
+        ? this.buildProactivePrompt(snapshot, member, group.settings.maxPromptMessages)
+        : buildMemberPrompt(snapshot, member, group.settings.maxPromptMessages, { writeAccess })
 
       outcome = await speakOnce(
         this.ctx,
         agent,
-        `chatgroup:${group.id}:${member.id}:m${String(message.seq)}${writeAccess ? ':w' : ''}`,
+        `chatgroup:${group.id}:${member.id}:${intent}${writeAccess ? ':w' : ''}`,
         ai,
         persona,
         prompt,
         controller.signal,
-        delta => {
-          if (group.destroyed || !this.isLive(group)) return
-          const current = group.messages.find(candidate => candidate.id === message.id)
-          if (current === undefined) return
-          group.messages = group.messages.map(candidate => candidate.id === message.id
-            ? { ...candidate, text: `${current.text}${delta}` }
-            : candidate)
-          this.bump(group)
-        },
+        message === undefined
+          ? undefined
+          : (delta) => {
+            if (group.destroyed || !this.isLive(group)) return
+            const current = group.messages.find(candidate => candidate.id === message.id)
+            if (current === undefined) return
+            group.messages = group.messages.map(candidate => candidate.id === message.id
+              ? { ...candidate, text: `${current.text}${delta}` }
+              : candidate)
+            this.bump(group)
+          },
       )
 
       clearTimeout(timer)
@@ -1274,37 +1352,121 @@ export class ChatGroupService {
         : outcome.status === 'failed'
       if (!failed || attempt === 1 || group.stopRequested || group.destroyed) break
 
-      group.messages = group.messages.map(candidate => candidate.id === message.id
-        ? { ...candidate, text: '', error: `${outcome?.detail ?? 'subagent failed'}；正在自动重试一次…` }
-        : candidate)
-      this.bump(group)
-      this.persistMessage(group, group.messages.find(candidate => candidate.id === message.id)!)
+      if (message !== undefined) {
+        group.messages = group.messages.map(candidate => candidate.id === message.id
+          ? { ...candidate, text: '', error: `${outcome?.detail ?? 'subagent failed'}；正在自动重试一次…` }
+          : candidate)
+        this.bump(group)
+        this.persistMessage(group, group.messages.find(candidate => candidate.id === message.id)!)
+      }
       await new Promise(resolve => setTimeout(resolve, 500))
     }
 
     if (outcome === undefined) return
 
-    if (group.currentMessageId === message.id) {
+    if (message !== undefined && group.currentMessageId === message.id) {
       group.currentSpeakerId = undefined
       group.currentMessageId = undefined
     }
 
-    if (!group.destroyed && this.isLive(group)) {
-      const updated = group.messages.find(candidate => candidate.id === message.id)
-      const finalMessage: ChatGroupMessage | undefined = updated === undefined ? undefined : {
-        ...updated,
-        text: outcome.text,
-        status: timedOut && !(outcome.status === 'completed' && outcome.text.length > 0)
-          ? 'timeout'
-          : outcome.status,
-        ...outcome.detail ? { error: outcome.detail } : {},
-        completedAt: Date.now(),
+    if (group.destroyed || !this.isLive(group)) return
+
+    if (proactive) {
+      this.settleProactive(group, member, outcome, depth)
+      return
+    }
+
+    if (message === undefined) return
+    const updated = group.messages.find(candidate => candidate.id === message.id)
+    const finalMessage: ChatGroupMessage | undefined = updated === undefined ? undefined : {
+      ...updated,
+      text: outcome.text,
+      status: timedOut && !(outcome.status === 'completed' && outcome.text.length > 0)
+        ? 'timeout'
+        : outcome.status,
+      ...outcome.detail ? { error: outcome.detail } : {},
+      completedAt: Date.now(),
+    }
+    if (finalMessage !== undefined) {
+      group.messages = group.messages.map(candidate => candidate.id === finalMessage.id ? finalMessage : candidate)
+      this.bump(group)
+      this.persistMessage(group, finalMessage)
+      this.resolveAiMentions(group, finalMessage, depth)
+    }
+  }
+
+  /** V2.3: proactive consult prompt — the AI may add one remark or decline. */
+  private buildProactivePrompt(
+    group: ChatGroupSnapshot,
+    member: ChatGroupMember,
+    maxPromptMessages: number,
+  ): string {
+    const base = buildMemberPrompt(group, member, maxPromptMessages)
+    return [
+      base,
+      '',
+      '本轮讨论已经结束。如果你认为有必须补充的关键信息或不同观点，请直接输出补充内容；',
+      '如果无需补充，请只输出“无需补充”四个字。',
+      '如果你要 @ 其他成员，请用 @成员名 的形式写在补充内容中。',
+    ].join('\n')
+  }
+
+  /** V2.3: handle a proactive consult result — append a remark or record a decline. */
+  private settleProactive(
+    group: InternalGroup,
+    member: ChatGroupMember,
+    outcome: Awaited<ReturnType<typeof speakOnce>>,
+    depth: number,
+  ): void {
+    const text = outcome.text.trim()
+    const declined = text.length === 0
+      || text === '无需补充'
+      || /^无需补充[。.!！]?$/.test(text)
+      || /^(不需要|不用|no need|skip)$/i.test(text)
+    if (declined) return
+
+    if (group.proactiveCount >= group.settings.maxProactivePerRound) return
+
+    const message: ChatGroupMessage = {
+      id: `msg-${randomUUID()}`,
+      seq: group.messages.length,
+      topicId: group.currentTopicId,
+      round: group.mode === 'round' ? group.round : 0,
+      senderId: member.id,
+      text,
+      mentionIds: [],
+      status: 'completed',
+      completedAt: Date.now(),
+      createdAt: Date.now(),
+    }
+    group.messages = [...group.messages, message]
+    group.proactiveCount += 1
+    this.bump(group)
+    this.persistMessage(group, message)
+    this.resolveAiMentions(group, message, depth)
+  }
+
+  /** V2.3: parse @mentions inside an AI message; enqueue solo replies with depth limits. */
+  private resolveAiMentions(group: InternalGroup, message: ChatGroupMessage, depth: number): void {
+    if (group.settings.maxAiMentionDepth <= 0) return
+    const targets = new Set<string>()
+    for (const candidate of group.members) {
+      if (candidate.kind !== 'ai' || candidate.id === message.senderId) continue
+      const name = candidate.name
+      const pattern = new RegExp(`@${escapeRegExp(name)}\\b`)
+      if (pattern.test(message.text)) targets.add(candidate.id)
+    }
+    for (const targetId of targets) {
+      const nextDepth = depth + 1
+      if (nextDepth > group.settings.maxAiMentionDepth) {
+        this.appendSystemMessage(group, `@${group.members.find(member => member.id === targetId)?.name ?? targetId}：AI 互 @ 深度已达上限，已忽略。`, message.round)
+        continue
       }
-      if (finalMessage !== undefined) {
-        group.messages = group.messages.map(candidate => candidate.id === finalMessage.id ? finalMessage : candidate)
-        this.bump(group)
-        this.persistMessage(group, finalMessage)
-      }
+      const seenKey = `${message.round}:${targetId}`
+      if (group.mentionSeen.has(seenKey)) continue
+      group.mentionSeen.add(seenKey)
+      group.soloQueue.push({ memberId: targetId, writeAccess: false, depth: nextDepth })
+      this.bump(group)
     }
   }
 
@@ -1350,6 +1512,23 @@ export class ChatGroupService {
       return true
     }
 
+    // V2.3 proactive phase: after a clean round, let each AI offer one remark.
+    if (!group.stopRequested && group.settings.aiProactive && group.speakerOrder.length > 0) {
+      const proactiveRound = group.mode === 'round' ? group.round : group.round
+      if (group.proactiveRound !== proactiveRound && group.proactiveCount < group.settings.maxProactivePerRound) {
+        group.proactiveActive = true
+        group.proactiveRound = proactiveRound
+        group.proactiveQueue = [...group.speakerOrder]
+        group.status = 'running'
+        group.stopRequested = false
+        this.bump(group)
+        this.persistState(group)
+        return true
+      }
+    }
+    group.proactiveActive = false
+    group.proactiveQueue = []
+    group.mentionSeen.clear()
     group.status = 'idle'
     group.mode = 'idle'
     group.stopRequested = false
@@ -1405,6 +1584,9 @@ export class ChatGroupService {
         maxPromptMessages: group.settings.maxPromptMessages,
         messagePageSize: group.settings.messagePageSize,
         maxEditableMessages: group.settings.maxEditableMessages,
+      aiProactive: group.settings.aiProactive,
+      maxProactivePerRound: group.settings.maxProactivePerRound,
+      maxAiMentionDepth: group.settings.maxAiMentionDepth,
       },
       ...group.autoActive ? {
         autoTotalRounds: group.autoTotalRounds,
@@ -1470,4 +1652,8 @@ export class ChatGroupService {
   private isLive(group: InternalGroup): boolean {
     return this.groups.get(group.sessionId)?.get(group.id) === group
   }
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

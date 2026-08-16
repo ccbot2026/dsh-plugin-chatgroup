@@ -163,6 +163,10 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     waitTimeoutMs: '25000',
     maxPromptMessages: '40',
     messagePageSize: '100',
+    maxEditableMessages: '20',
+    aiProactive: 'false',
+    maxProactivePerRound: '1',
+    maxAiMentionDepth: '1',
   })
   const configKeyRef = useRef('')
   const [showSettings, setShowSettings] = useState(true)
@@ -294,6 +298,10 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       waitTimeoutMs: String(group.config.waitTimeoutMs),
       maxPromptMessages: String(group.config.maxPromptMessages),
       messagePageSize: String(group.config.messagePageSize),
+      maxEditableMessages: String(group.config.maxEditableMessages ?? 20),
+      aiProactive: String(group.config.aiProactive ?? false),
+      maxProactivePerRound: String(group.config.maxProactivePerRound ?? 1),
+      maxAiMentionDepth: String(group.config.maxAiMentionDepth ?? 1),
     })
   }, [group?.config])
 
@@ -529,9 +537,12 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     const waitTimeoutMs = Number(configForm.waitTimeoutMs)
     const maxPromptMessages = Number(configForm.maxPromptMessages)
     const messagePageSize = Number(configForm.messagePageSize)
+    const maxEditableMessages = Number(configForm.maxEditableMessages)
+    const maxProactivePerRound = Number(configForm.maxProactivePerRound)
+    const maxAiMentionDepth = Number(configForm.maxAiMentionDepth)
     const readonlyTools = configForm.readonlyTools.split(',').map(tool => tool.trim()).filter(Boolean)
 
-    if (![maxAi, defaultTimeoutMs, waitTimeoutMs, maxPromptMessages, messagePageSize].every(Number.isSafeInteger)) {
+    if (![maxAi, defaultTimeoutMs, waitTimeoutMs, maxPromptMessages, messagePageSize, maxEditableMessages, maxProactivePerRound, maxAiMentionDepth].every(Number.isSafeInteger)) {
       setError('配置数值必须是整数')
       return
     }
@@ -547,6 +558,10 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       waitTimeoutMs,
       maxPromptMessages,
       messagePageSize,
+      maxEditableMessages,
+      aiProactive: configForm.aiProactive === 'true',
+      maxProactivePerRound,
+      maxAiMentionDepth,
     }, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
@@ -853,6 +868,12 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
         createElement('input', { style: inputStyle, placeholder: 'waitTimeoutMs', value: configForm.waitTimeoutMs, onChange: event => setConfigForm({ ...configForm, waitTimeoutMs: event.target.value }) }),
         createElement('input', { style: inputStyle, placeholder: 'maxPromptMessages (0=不限)', value: configForm.maxPromptMessages, onChange: event => setConfigForm({ ...configForm, maxPromptMessages: event.target.value }) }),
         createElement('input', { style: inputStyle, placeholder: 'messagePageSize', value: configForm.messagePageSize, onChange: event => setConfigForm({ ...configForm, messagePageSize: event.target.value }) }),
+        createElement('input', { style: inputStyle, placeholder: 'maxEditableMessages', value: configForm.maxEditableMessages, onChange: event => setConfigForm({ ...configForm, maxEditableMessages: event.target.value }) }),
+        createElement('select', { style: inputStyle, value: configForm.aiProactive, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setConfigForm({ ...configForm, aiProactive: event.target.value }) },
+          createElement('option', { value: 'false' }, 'aiProactive: off'),
+          createElement('option', { value: 'true' }, 'aiProactive: on')),
+        createElement('input', { style: inputStyle, placeholder: 'maxProactivePerRound', value: configForm.maxProactivePerRound, onChange: event => setConfigForm({ ...configForm, maxProactivePerRound: event.target.value }) }),
+        createElement('input', { style: inputStyle, placeholder: 'maxAiMentionDepth', value: configForm.maxAiMentionDepth, onChange: event => setConfigForm({ ...configForm, maxAiMentionDepth: event.target.value }) }),
       ),
       createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'readonlyTools（逗号分隔）', value: configForm.readonlyTools, onChange: event => setConfigForm({ ...configForm, readonlyTools: event.target.value }) }),
       createElement('button', { type: 'button', style: buttonStyle, disabled: busy || running, onClick: () => { void saveConfig() } }, '保存群配置'),

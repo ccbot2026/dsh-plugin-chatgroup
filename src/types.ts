@@ -11,6 +11,9 @@ export const DEFAULT_WAIT_TIMEOUT_MS = 25_000
 export const DEFAULT_MAX_PROMPT_MESSAGES = 40
 export const DEFAULT_MESSAGE_PAGE_SIZE = 100
 export const DEFAULT_MAX_EDITABLE_MESSAGES = 20
+export const DEFAULT_AI_PROACTIVE = false
+export const DEFAULT_MAX_PROACTIVE_PER_ROUND = 1
+export const DEFAULT_MAX_AI_MENTION_DEPTH = 1
 export const DEFAULT_READONLY_TOOLS = ['read', 'read_image', 'glob', 'grep'] as const
 
 export type GroupId = string
@@ -46,6 +49,10 @@ export interface ChatGroupMember {
 export interface SoloRequest {
   readonly memberId: string
   readonly writeAccess: boolean
+  /** V2.3: AI-to-AI @ chain depth; 0 = user-initiated. */
+  readonly depth: number
+  /** V2.3: true when this is a proactive-consult request (may yield a remark). */
+  readonly proactive?: boolean
 }
 
 export interface ChatTopic {
@@ -139,4 +146,10 @@ export interface ChatGroupConfig {
   readonly messagePageSize: number
   /** Newest N messages (by seq) may be edited/withdrawn by the admin. */
   readonly maxEditableMessages: number
+  /** V2.3: let AI members proactively add one extra remark after a round. */
+  readonly aiProactive: boolean
+  /** V2.3: max proactive remarks per round. */
+  readonly maxProactivePerRound: number
+  /** V2.3: max AI-to-AI @ chain depth (1 = one hop). */
+  readonly maxAiMentionDepth: number
 }
