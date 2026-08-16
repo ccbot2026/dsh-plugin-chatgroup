@@ -5,12 +5,19 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 export const USER_MEMBER_ID = 'user'
 export const SYSTEM_MEMBER_ID = 'system'
 export const DEFAULT_MAX_AI = 5
+/** Default concurrent-group cap per session; panel/config can raise it. */
+export const DEFAULT_MAX_GROUPS = 1
 export const DEFAULT_SPEECH_TIMEOUT_MS = 300_000
 export const DEFAULT_WAIT_TIMEOUT_MS = 25_000
 export const DEFAULT_MAX_PROMPT_MESSAGES = 40
 export const DEFAULT_MESSAGE_PAGE_SIZE = 100
+export const DEFAULT_MAX_EDITABLE_MESSAGES = 20
+export const DEFAULT_AI_PROACTIVE = false
+export const DEFAULT_MAX_PROACTIVE_PER_ROUND = 1
+export const DEFAULT_MAX_AI_MENTION_DEPTH = 1
 export const DEFAULT_READONLY_TOOLS = ['read', 'read_image', 'glob', 'grep'] as const
 
+export type GroupId = string
 export type MemberRole = 'admin' | 'member'
 export type MemberKind = 'user' | 'ai'
 export type GroupStatus = 'idle' | 'running'
@@ -22,6 +29,7 @@ export type MessageStatus =
   | 'failed'
   | 'timeout'
   | 'cancelled'
+  | 'withdrawn'
 
 export interface AiMemberConfig {
   readonly provider: string
@@ -42,6 +50,12 @@ export interface ChatGroupMember {
 export interface SoloRequest {
   readonly memberId: string
   readonly writeAccess: boolean
+  /** V2.3: AI-to-AI @ chain depth; 0 = user-initiated. */
+  readonly depth: number
+  /** V2.3: true when this is a proactive-consult request (may yield a remark). */
+  readonly proactive?: boolean
+  /** V0.4.1: true when this request produces a first-round interrupt summary. */
+  readonly summary?: boolean
 }
 
 export interface ChatTopic {
@@ -68,10 +82,27 @@ export interface ChatGroupMessage {
   readonly error?: string
   readonly createdAt: number
   readonly completedAt?: number
+  /** Set when the message was edited; keeps the original text for audit. */
+  readonly editedAt?: number
+  /** The text as last edited; `text` keeps the original. */
+  readonly editedText?: string
+  /** V2.6: token usage of the AI utterance that produced this message. */
+  readonly usage?: MessageUsage
+}
+
+/** Token accounting for one AI utterance (V2.6). */
+export interface MessageUsage {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens?: number
+  readonly cacheWriteTokens?: number
+  readonly reasoningTokens?: number
 }
 
 export interface ChatGroupSnapshot {
-  readonly groupId: string
+  readonly groupId: GroupId
+  /** V2.5: human-readable group name, defaults to the group id. */
+  readonly name?: string
   readonly sessionId: SessionId
   /** Working directory inherited from the owning dsh session, if configured. */
   readonly cwd?: string
@@ -88,6 +119,10 @@ export interface ChatGroupSnapshot {
   readonly hasMoreMessages: boolean
   readonly oldestLoadedSeq?: number
   readonly currentSpeakerId?: string
+  /** V2.5: live read-only tool activity of the current speaker. */
+  readonly toolActivity?: { memberId: string; tool: string; argsPreview: string; active: boolean }
+  /** V2.6: per-AI-member cumulative token usage across the session. */
+  readonly memberUsage: Record<string, MessageUsage>
   readonly nextSpeakerIds: readonly string[]
   readonly soloQueue: readonly SoloRequest[]
   readonly autoActive: boolean
@@ -98,6 +133,18 @@ export interface ChatGroupSnapshot {
   readonly currentTopicId: string
   readonly topics: readonly ChatTopic[]
   readonly sandboxMode?: string
+  /** All groups in the session (V2.1 multi-group). */
+  readonly groups: readonly ChatGroupSummary[]
+}
+
+/** Lightweight cross-group navigation row (V2.1). */
+export interface ChatGroupSummary {
+  readonly groupId: GroupId
+  readonly name?: string
+  readonly status: GroupStatus
+  readonly round: number
+  readonly totalMessages: number
+  readonly currentTopicTitle: string
 }
 
 export interface CreateAiMemberInput {
@@ -110,6 +157,7 @@ export interface CreateAiMemberInput {
 
 export interface ChatGroupConfig {
   readonly maxAi: number
+  readonly maxGroups: number
   readonly defaultTimeoutMs: number
   readonly readonlyTools: readonly string[]
   readonly waitTimeoutMs: number
@@ -117,4 +165,12 @@ export interface ChatGroupConfig {
   readonly maxPromptMessages: number
   /** Number of tail messages returned in each RPC snapshot page. */
   readonly messagePageSize: number
+  /** Newest N messages (by seq) may be edited/withdrawn by the admin. */
+  readonly maxEditableMessages: number
+  /** V2.3: let AI members proactively add one extra remark after a round. */
+  readonly aiProactive: boolean
+  /** V2.3: max proactive remarks per round. */
+  readonly maxProactivePerRound: number
+  /** V2.3: max AI-to-AI @ chain depth (1 = one hop). */
+  readonly maxAiMentionDepth: number
 }

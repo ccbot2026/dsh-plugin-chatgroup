@@ -1,7 +1,7 @@
 import { createElement, Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, UIEvent as ReactUIEvent } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ChatGroupConfig, ChatGroupMessage, ChatGroupSnapshot } from '../types.js'
+import type { ChatGroupConfig, ChatGroupMessage, ChatGroupSnapshot, ChatGroupSummary, GroupId } from '../types.js'
 import type { ChatGroupPanelController } from './panel-controller.js'
 import type { ChatGroupRpcClient, ModelCatalog } from './rpc-client.js'
 
@@ -57,8 +57,9 @@ const messageListStyle: React.CSSProperties = {
 }
 
 const sidebarStyle: React.CSSProperties = {
+  position: 'relative',
   width: 320,
-  minWidth: 260,
+  minWidth: 240,
   borderLeft: '1px solid #e2e5ea',
   background: '#f8fafc',
   overflowY: 'auto',
@@ -113,7 +114,76 @@ const inputStyle: React.CSSProperties = {
   fontSize: 13,
 }
 
+/** V0.4.1: custom composer capsule (textarea + embedded toolbar, like main input). */
+const composerBoxStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  border: '1px solid #d1d5db',
+  borderRadius: 10,
+  background: '#ffffff',
+  overflow: 'hidden',
+}
+
+const composerTextareaStyle: React.CSSProperties = {
+  ...inputStyle,
+  border: 'none',
+  borderRadius: 0,
+  flex: 1,
+  minHeight: 72,
+  resize: 'vertical',
+  fontSize: 14,
+  lineHeight: 1.5,
+}
+
+const composerToolbarStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 8px',
+  borderTop: '1px solid #eef0f3',
+  background: '#fafbfc',
+}
+
 const labelStyle: React.CSSProperties = { fontSize: 12, color: '#4b5563', margin: '8px 0 3px' }
+
+/** Collapsible settings section. */
+const sectionStyle: React.CSSProperties = {
+  border: '1px solid #e2e5ea',
+  borderRadius: 8,
+  marginBottom: 8,
+  background: '#ffffff',
+  overflow: 'hidden',
+}
+
+const sectionSummaryStyle: React.CSSProperties = {
+  padding: '7px 10px',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+  background: '#f8fafc',
+  userSelect: 'none',
+}
+
+const sectionBodyStyle: React.CSSProperties = { padding: '8px 10px' }
+
+/** One config row: label (name + current value) above the input. */
+const fieldLabelStyle: React.CSSProperties = { fontSize: 11, color: '#6b7280', margin: '6px 0 2px' }
+const fieldHintStyle: React.CSSProperties = { fontSize: 11, color: '#9ca3af', marginLeft: 6 }
+
+/** Chinese descriptions for every runtime config key. */
+const CONFIG_LABELS: Record<string, { label: string; hint: string }> = {
+  maxAi: { label: 'AI 成员上限', hint: '1-5' },
+  maxGroups: { label: '群数量上限', hint: '一个会话最多几个群' },
+  defaultTimeoutMs: { label: '发言超时', hint: '毫秒，AI 单次发言超时' },
+  readonlyTools: { label: '只读工具', hint: '逗号分隔，AI 可用只读工具' },
+  waitTimeoutMs: { label: '长轮询超时', hint: '毫秒，面板等待更新上限' },
+  maxPromptMessages: { label: 'AI 可见消息数', hint: '0=全部' },
+  messagePageSize: { label: '每页消息数', hint: '快照尾页条数' },
+  maxEditableMessages: { label: '可编辑条数', hint: '最近 N 条可编辑/撤回，0=禁止' },
+  aiProactive: { label: 'AI 主动补充', hint: '轮结束后是否允许 AI 追加发言' },
+  maxProactivePerRound: { label: '每轮主动发言上限', hint: '每轮最多补充几条' },
+  maxAiMentionDepth: { label: 'AI 互@深度', hint: 'AI @ AI 的链路深度上限' },
+}
 
 function memberName(snapshot: ChatGroupSnapshot, memberId: string): string {
   if (memberId === 'user') return '用户'
@@ -129,13 +199,32 @@ function statusLabel(status: string, statusOnly = false): string {
     case 'failed': return '失败'
     case 'timeout': return '超时'
     case 'cancelled': return '已取消'
+    case 'withdrawn': return '已撤回'
     default: return status
   }
+}
+
+/** V2.6: render one member's cumulative usage line. */
+function memberUsageText(usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number } | undefined): string {
+  if (usage === undefined) return ''
+  const input = usage.inputTokens
+  const cache = usage.cacheReadTokens ?? 0
+  const totalInput = input + cache
+  const cacheHit = totalInput > 0 ? Math.round((cache / totalInput) * 100) : 0
+  const parts = [`输入 ${formatTok(input + cache)}`, `输出 ${formatTok(usage.outputTokens)}`]
+  if (cache > 0) parts.push(`缓存 ${String(cacheHit)}%`)
+  return parts.join(' · ')
+}
+
+function formatTok(value: number): string {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return String(value)
 }
 
 export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelProps) {
   const sessionId = useSyncExternalStore(controller.subscribe, controller.getSessionId)
   const currentSessionId = useSessions(state => state.current)
+  const [groupId, setGroupId] = useState<GroupId | ''>('')
   const [group, setGroup] = useState<ChatGroupSnapshot | null>(null)
   const [revision, setRevision] = useState(-1)
   const revisionRef = useRef(-1)
@@ -152,16 +241,24 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   const [topicFilter, setTopicFilter] = useState<string>('all')
   const [filteredTopicMessages, setFilteredTopicMessages] = useState<ChatGroupMessage[]>([])
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const [editingSeq, setEditingSeq] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
   const [configForm, setConfigForm] = useState({
     maxAi: '5',
+    maxGroups: '2',
     defaultTimeoutMs: '300000',
     readonlyTools: 'read, read_image, glob, grep',
     waitTimeoutMs: '25000',
     maxPromptMessages: '40',
     messagePageSize: '100',
+    maxEditableMessages: '20',
+    aiProactive: 'false',
+    maxProactivePerRound: '1',
+    maxAiMentionDepth: '1',
   })
   const configKeyRef = useRef('')
   const [showSettings, setShowSettings] = useState(true)
+  const [renameValue, setRenameValue] = useState('')
   const [olderMessages, setOlderMessages] = useState<ChatGroupMessage[]>([])
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -177,6 +274,18 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   })
   const drawerWidthRef = useRef(drawerWidth)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  /** V0.4.1: right settings sidebar width + collapsed state. */
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') return 320
+    const stored = Number(window.localStorage.getItem('chatgroup.sidebarWidth'))
+    if (Number.isFinite(stored) && stored >= 240) return Math.min(stored, 460)
+    return 320
+  })
+  const sidebarWidthRef = useRef(sidebarWidth)
+  const [settingsCollapsed, setSettingsCollapsed] = useState(false)
+  /** V0.4.1: composer capsule focus ring (uniform rounded border). */
+  const [composerFocused, setComposerFocused] = useState(false)
 
   function beginResize(event: ReactPointerEvent<HTMLDivElement>): void {
     event.preventDefault()
@@ -207,8 +316,40 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     target.addEventListener('pointercancel', up)
   }
 
+  /** V0.4.1: drag the right settings sidebar's left edge to resize it. */
+  function beginSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    event.preventDefault()
+    const target = event.currentTarget
+    target.setPointerCapture(event.pointerId)
+
+    const move = (moveEvent: PointerEvent): void => {
+      if (typeof window === 'undefined' || panelRef.current === null) return
+      const panelRect = panelRef.current.getBoundingClientRect()
+      const width = Math.max(240, Math.min(panelRect.right - moveEvent.clientX, 460))
+      sidebarWidthRef.current = width
+      setSidebarWidth(width)
+    }
+
+    const up = (): void => {
+      target.releasePointerCapture(event.pointerId)
+      target.removeEventListener('pointermove', move)
+      target.removeEventListener('pointerup', up)
+      target.removeEventListener('pointercancel', up)
+      try {
+        window.localStorage.setItem('chatgroup.sidebarWidth', String(sidebarWidthRef.current))
+      } catch {
+        // Ignore storage failures.
+      }
+    }
+
+    target.addEventListener('pointermove', move)
+    target.addEventListener('pointerup', up)
+    target.addEventListener('pointercancel', up)
+  }
+
   useEffect(() => {
     if (sessionId === null) {
+      setGroupId('')
       setGroup(null)
       setRevision(-1)
       revisionRef.current = -1
@@ -222,8 +363,11 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     let disposed = false
 
     async function refresh(): Promise<void> {
-      const next = await rpc.snapshot(sessionId!, controllerAbort.signal)
+      const next = await rpc.snapshot(sessionId!, groupId === '' ? undefined : groupId, controllerAbort.signal)
       if (disposed) return
+      if (next.group !== null && groupId === '') {
+        setGroupId(next.group.groupId)
+      }
       setGroup(next.group)
       setRevision(next.revision)
       revisionRef.current = next.revision
@@ -232,9 +376,12 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     async function watch(): Promise<void> {
       while (!disposed && !controllerAbort.signal.aborted) {
         try {
-          const waited = await rpc.wait(sessionId!, revisionRef.current, controllerAbort.signal)
+          const waited = await rpc.wait(sessionId!, revisionRef.current, groupId === '' ? undefined : groupId, controllerAbort.signal)
           if (disposed || controllerAbort.signal.aborted) return
           if (waited.changed) {
+            if (waited.group !== null && groupId === '') {
+              setGroupId(waited.group.groupId)
+            }
             setGroup(waited.group)
             setRevision(waited.revision)
             revisionRef.current = waited.revision
@@ -265,7 +412,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       disposed = true
       controllerAbort.abort()
     }
-  }, [sessionId])
+  }, [sessionId, groupId])
 
   useEffect(() => {
     if (group !== null) setOrderText(group.speakerOrder.map(id => memberName(group, id)).join(', '))
@@ -278,11 +425,16 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     configKeyRef.current = key
     setConfigForm({
       maxAi: String(group.config.maxAi),
+      maxGroups: String(group.config.maxGroups ?? 1),
       defaultTimeoutMs: String(group.config.defaultTimeoutMs),
       readonlyTools: group.config.readonlyTools.join(', '),
       waitTimeoutMs: String(group.config.waitTimeoutMs),
       maxPromptMessages: String(group.config.maxPromptMessages),
       messagePageSize: String(group.config.messagePageSize),
+      maxEditableMessages: String(group.config.maxEditableMessages ?? 20),
+      aiProactive: String(group.config.aiProactive ?? false),
+      maxProactivePerRound: String(group.config.maxProactivePerRound ?? 1),
+      maxAiMentionDepth: String(group.config.maxAiMentionDepth ?? 1),
     })
   }, [group?.config])
 
@@ -341,6 +493,25 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     if (sessionId !== currentSessionId) controller.open(currentSessionId)
   }, [sessionId, currentSessionId, controller])
 
+  // V0.4.1: clicking outside the panel auto-hides it (except the launcher).
+  useEffect(() => {
+    if (sessionId === null) return
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (panelRef.current !== null && panelRef.current.contains(target)) return
+      const launcher = (target as HTMLElement).closest?.('[data-chatgroup-launcher]')
+      if (launcher !== null && launcher !== undefined) return
+      controller.close()
+    }
+    // Defer a tick so the opening click itself does not immediately close it.
+    const timer = setTimeout(() => document.addEventListener('pointerdown', onPointerDown, true), 0)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+    }
+  }, [sessionId, controller])
+
   async function run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     setBusy(true)
     setError(null)
@@ -361,8 +532,8 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       return
     }
     const envelope = await run(signal => mentionId
-      ? rpc.at(sessionId, mentionId, text, { writeAccess: allowWrite }, signal)
-      : rpc.send(sessionId, text, signal))
+      ? rpc.at(sessionId, mentionId, text, { writeAccess: allowWrite }, groupId === '' ? undefined : groupId, signal)
+      : rpc.send(sessionId, text, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -376,14 +547,43 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     if (sessionId === null) return
     const envelope = await run(signal => rpc.create(sessionId, signal))
     if (envelope === undefined) return
+    setGroupId(envelope.group?.groupId ?? '')
     setGroup(envelope.group)
     setRevision(envelope.revision)
     revisionRef.current = envelope.revision
   }
 
+  async function switchGroup(target: string): Promise<void> {
+    if (sessionId === null || target === groupId) return
+    const envelope = await run(signal => rpc.useGroup(sessionId, target as GroupId, signal))
+    if (envelope === undefined) return
+    setGroupId(target)
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+    setOlderMessages([])
+    setHasMoreOlder(false)
+    setTopicFilter('all')
+    setFilteredTopicMessages([])
+    setText('')
+    setMentionId('')
+  }
+
+  async function renameGroup(): Promise<void> {
+    if (sessionId === null || group === null) return
+    const name = renameValue.trim()
+    if (name.length === 0) return
+    const envelope = await run(signal => rpc.renameGroup(sessionId, name, groupId === '' ? undefined : groupId, signal))
+    if (envelope === undefined) return
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+    setRenameValue('')
+  }
+
   async function stopRound(): Promise<void> {
     if (sessionId === null) return
-    const envelope = await run(signal => rpc.stop(sessionId, signal))
+    const envelope = await run(signal => rpc.stop(sessionId, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -399,7 +599,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       model: memberForm.model.trim(),
       ...memberForm.systemPrompt.trim() ? { systemPrompt: memberForm.systemPrompt.trim() } : {},
       ...memberForm.timeout.trim() ? { timeoutMs: Number(memberForm.timeout.trim()) } : {},
-    }, signal))
+    }, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -415,7 +615,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   async function removeMember(name: string): Promise<void> {
     if (sessionId === null) return
-    const envelope = await run(signal => rpc.removeMember(sessionId, name, signal))
+    const envelope = await run(signal => rpc.removeMember(sessionId, name, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -425,7 +625,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   async function saveOrder(): Promise<void> {
     if (sessionId === null) return
     const names = orderText.split(/[,，\s]+/).map(token => token.trim()).filter(Boolean)
-    const envelope = await run(signal => rpc.reorderMembers(sessionId, names, signal))
+    const envelope = await run(signal => rpc.reorderMembers(sessionId, names, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -434,7 +634,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   async function toggleMention(): Promise<void> {
     if (sessionId === null || group === null) return
-    const envelope = await run(signal => rpc.setMentionEnabled(sessionId, !group.mentionEnabled, signal))
+    const envelope = await run(signal => rpc.setMentionEnabled(sessionId, !group.mentionEnabled, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -443,7 +643,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   async function dissolve(): Promise<void> {
     if (sessionId === null) return
-    await run(signal => rpc.dissolve(sessionId, signal))
+    await run(signal => rpc.dissolve(sessionId, groupId === '' ? undefined : groupId, signal))
     setGroup(null)
     setRevision(-1)
     revisionRef.current = -1
@@ -459,7 +659,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
     setLoadingOlder(true)
     try {
-      const page = await rpc.messagesBefore(sessionId, beforeSeq)
+      const page = await rpc.messagesBefore(sessionId, beforeSeq, undefined, groupId === '' ? undefined : groupId)
       setOlderMessages(previous => {
         const existing = new Set(previous.map(message => message.seq))
         return [...page.messages.filter(message => !existing.has(message.seq)), ...previous]
@@ -481,7 +681,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     }
     if (sessionId === null) return
     try {
-      const page = await rpc.topicMessages(sessionId, topicId)
+      const page = await rpc.topicMessages(sessionId, topicId, groupId === '' ? undefined : groupId)
       setFilteredTopicMessages(page.messages)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -497,13 +697,17 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   async function saveConfig(): Promise<void> {
     if (sessionId === null || group === null) return
     const maxAi = Number(configForm.maxAi)
+    const maxGroups = Number(configForm.maxGroups)
     const defaultTimeoutMs = Number(configForm.defaultTimeoutMs)
     const waitTimeoutMs = Number(configForm.waitTimeoutMs)
     const maxPromptMessages = Number(configForm.maxPromptMessages)
     const messagePageSize = Number(configForm.messagePageSize)
+    const maxEditableMessages = Number(configForm.maxEditableMessages)
+    const maxProactivePerRound = Number(configForm.maxProactivePerRound)
+    const maxAiMentionDepth = Number(configForm.maxAiMentionDepth)
     const readonlyTools = configForm.readonlyTools.split(',').map(tool => tool.trim()).filter(Boolean)
 
-    if (![maxAi, defaultTimeoutMs, waitTimeoutMs, maxPromptMessages, messagePageSize].every(Number.isSafeInteger)) {
+    if (![maxAi, maxGroups, defaultTimeoutMs, waitTimeoutMs, maxPromptMessages, messagePageSize, maxEditableMessages, maxProactivePerRound, maxAiMentionDepth].every(Number.isSafeInteger)) {
       setError('配置数值必须是整数')
       return
     }
@@ -514,12 +718,17 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
     const envelope = await run(signal => rpc.updateConfig(sessionId, {
       maxAi,
+      maxGroups,
       defaultTimeoutMs,
       readonlyTools,
       waitTimeoutMs,
       maxPromptMessages,
       messagePageSize,
-    }, signal))
+      maxEditableMessages,
+      aiProactive: configForm.aiProactive === 'true',
+      maxProactivePerRound,
+      maxAiMentionDepth,
+    }, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -529,7 +738,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   async function exportChat(): Promise<void> {
     if (sessionId === null) return
     try {
-      const result = await rpc.exportTranscript(sessionId)
+      const result = await rpc.exportTranscript(sessionId, groupId === '' ? undefined : groupId)
       const blob = new Blob([result.content], { type: 'text/markdown;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
@@ -553,6 +762,32 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     }
   }
 
+  function beginEdit(message: ChatGroupMessage): void {
+    setEditingSeq(message.seq)
+    setEditDraft(message.editedText ?? message.text)
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (sessionId === null || editingSeq === null || editDraft.trim().length === 0) return
+    const envelope = await run(signal => rpc.editMessage(sessionId, editingSeq, editDraft, groupId === '' ? undefined : groupId, signal))
+    if (envelope === undefined) return
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+    setEditingSeq(null)
+    setEditDraft('')
+  }
+
+  async function withdrawMessage(message: ChatGroupMessage): Promise<void> {
+    if (sessionId === null) return
+    if (typeof window !== 'undefined' && !window.confirm(`撤回该消息？\n${message.text.slice(0, 80)}`)) return
+    const envelope = await run(signal => rpc.withdrawMessage(sessionId, message.seq, groupId === '' ? undefined : groupId, signal))
+    if (envelope === undefined) return
+    setGroup(envelope.group)
+    setRevision(envelope.revision)
+    revisionRef.current = envelope.revision
+  }
+
   async function startNewTopic(): Promise<void> {
     if (sessionId === null) return
     const title = topicTitle.trim()
@@ -561,7 +796,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       return
     }
     if (typeof window !== 'undefined' && !window.confirm(`结束当前讨论并开启新议题：${title}？`)) return
-    const envelope = await run(signal => rpc.startTopic(sessionId, title, signal))
+    const envelope = await run(signal => rpc.startTopic(sessionId, title, groupId === '' ? undefined : groupId, signal))
     if (envelope === undefined) return
     setGroup(envelope.group)
     setRevision(envelope.revision)
@@ -583,6 +818,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       sessionId,
       rounds,
       autoForm.topic.trim().length > 0 ? autoForm.topic.trim() : undefined,
+      groupId === '' ? undefined : groupId,
       signal,
     ))
     if (envelope === undefined) return
@@ -596,6 +832,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     if (currentSessionId === undefined) return null
     return createElement('button', {
       type: 'button',
+      'data-chatgroup-launcher': true,
       style: launcherStyle,
       title: '打开群聊',
       onClick: () => controller.open(currentSessionId),
@@ -609,10 +846,18 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
   const header = createElement('div', { style: headerStyle },
     createElement('div', { style: { flex: 1, minWidth: 0 } },
-      createElement('div', { style: titleStyle },
-        group === null
-          ? '项目讨论群'
-          : `项目讨论群 · 第 ${group.round} 轮${group.blindRoundActive ? ' · 盲发中' : ''}`),
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        createElement('div', { style: titleStyle },
+          group === null
+            ? '项目讨论群'
+            : `${group.name ?? group.groupId} · 第 ${group.round} 轮${group.blindRoundActive ? ' · 盲发中' : ''}`),
+        group === null || group.groups.length <= 1 ? null : createElement('select', {
+          style: { ...inputStyle, width: 170, fontSize: 12 },
+          value: group.groupId,
+          onChange: (event: ReactChangeEvent<HTMLSelectElement>) => { void switchGroup(event.target.value) },
+        },
+          ...group.groups.map(summary => createElement('option', { key: summary.groupId, value: summary.groupId },
+            `${summary.groupId}${summary.status === 'running' ? ' · 发言中' : ''} · ${summary.currentTopicTitle}`)))),
       group === null ? null : createElement('div', {
         style: { fontSize: 11, color: group.cwd === undefined ? '#b45309' : '#4b5563', marginTop: 2 },
         title: group.cwd ?? '当前会话没有工作目录',
@@ -625,8 +870,19 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       group.currentSpeakerId === undefined
         ? '准备发言…'
         : `${memberName(group, group.currentSpeakerId)} 发言中`) : null,
-    createElement('button', { type: 'button', style: buttonStyle, onClick: () => { void exportChat() } }, '导出'),
-    createElement('button', { type: 'button', style: buttonStyle, onClick: () => controller.close() }, '关闭'),
+    group?.toolActivity?.active === true
+      ? createElement('span', {
+        style: { fontSize: 12, color: '#7c3aed', whiteSpace: 'nowrap', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' },
+        title: `${memberName(group, group.toolActivity.memberId)} 正在调用 ${group.toolActivity.tool} ${group.toolActivity.argsPreview}`,
+      }, `${memberName(group, group.toolActivity.memberId)} 正在${group.toolActivity.tool}${group.toolActivity.argsPreview === '' ? '' : ` ${group.toolActivity.argsPreview}`}…`)
+      : null,
+    // V0.4.1: collapse/expand the right settings sidebar (gear icon).
+    createElement('button', {
+      type: 'button',
+      style: { ...buttonStyle, padding: '3px 9px', fontSize: 14, lineHeight: 1 },
+      title: settingsCollapsed ? '展开设置' : '收起设置',
+      onClick: () => setSettingsCollapsed(value => !value),
+    }, settingsCollapsed ? '⚙' : '▸'),
   )
 
   const displayMessages = group === null
@@ -658,6 +914,8 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
 
     const own = message.senderId === 'user'
     const system = message.senderId === 'system'
+    const withdrawn = message.status === 'withdrawn'
+    const editable = !system && !withdrawn && message.status !== 'speaking' && message.text.length > 0
     nodes.push(createElement('div', {
       key: message.id,
       style: {
@@ -674,15 +932,41 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
     },
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, opacity: 0.85, marginBottom: 3 } },
         createElement('span', { style: { flex: 1 } },
-          `${memberName(group, message.senderId)} · R${message.round} · ${statusLabel(message.status, true)} · ${formatTime(message.createdAt)}${message.writeAccess === true ? ' · 临时写权限' : ''}`),
+          `${memberName(group, message.senderId)} · R${message.round} · ${statusLabel(message.status, true)} · ${formatTime(message.createdAt)}${message.writeAccess === true ? ' · 临时写权限' : ''}${message.editedAt !== undefined ? ' · 已编辑' : ''}`),
         message.senderId === 'system' || message.status === 'speaking' || message.text.length === 0
           ? null
           : createElement('button', {
             type: 'button',
             style: { ...buttonStyle, padding: '1px 6px', fontSize: 11 },
             onClick: () => { void copyMessage(message) },
-          }, copiedMessageId === message.id ? '已复制' : '复制')),
-      message.status === 'speaking' && message.text.length === 0 ? '正在输入…' : message.text,
+          }, copiedMessageId === message.id ? '已复制' : '复制'),
+        editable
+          ? createElement('button', {
+            type: 'button',
+            style: { ...buttonStyle, padding: '1px 6px', fontSize: 11 },
+            onClick: () => beginEdit(message),
+          }, '编辑')
+          : null,
+        editable
+          ? createElement('button', {
+            type: 'button',
+            style: { ...buttonStyle, padding: '1px 6px', fontSize: 11, color: '#b91c1c' },
+            onClick: () => { void withdrawMessage(message) },
+          }, '撤回')
+          : null),
+      withdrawn
+        ? createElement('span', { style: { fontStyle: 'italic', opacity: 0.6 } }, '（已撤回）')
+        : editingSeq === message.seq
+          ? createElement('div', null,
+            createElement('textarea', {
+              style: { ...inputStyle, marginBottom: 6, minHeight: 40 },
+              value: editDraft,
+              onChange: (event: ReactChangeEvent<HTMLTextAreaElement>) => setEditDraft(event.target.value),
+            }),
+            createElement('div', { style: { display: 'flex', gap: 6 } },
+              createElement('button', { type: 'button', style: { ...buttonStyle, ...primaryButtonStyle }, disabled: editDraft.trim().length === 0, onClick: () => { void saveEdit() } }, '保存'),
+              createElement('button', { type: 'button', style: buttonStyle, onClick: () => { setEditingSeq(null); setEditDraft('') } }, '取消')))
+          : message.status === 'speaking' && message.text.length === 0 ? '正在输入…' : (message.editedText ?? message.text),
       message.error === undefined ? null : createElement('div', { style: { fontSize: 11, opacity: 0.7, marginTop: 4 } }, message.error),
     ))
     return nodes
@@ -695,38 +979,18 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       running
         ? createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void stopRound() } }, '结束本轮')
         : null,
-      createElement('button', { type: 'button', style: buttonStyle, onClick: () => setShowSettings(value => !value) }, showSettings ? '收起设置' : '成员与设置'),
-      createElement('button', { type: 'button', style: buttonStyle, onClick: () => { void dissolve() } }, '解散'),
     ),
-    createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-      group.mentionEnabled && aiMembers.length > 0
-        ? createElement('select', { style: { ...inputStyle, width: 140 }, value: mentionId, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setMentionId(event.target.value) },
-          createElement('option', { value: '' }, '普通发言'),
-          ...aiMembers.map(member => createElement('option', { key: member.id, value: member.name }, `@${member.name}`)))
-        : null,
-      group.mentionEnabled && mentionId !== ''
-        ? createElement('label', {
-          style: {
-            fontSize: 12,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            color: group.sandboxMode === 'read-only' ? '#9ca3af' : '#111827',
-          },
-        },
-          createElement('input', {
-            type: 'checkbox',
-            disabled: group.sandboxMode === 'read-only',
-            checked: allowWrite,
-            onChange: event => setAllowWrite(event.target.checked),
-            title: group.sandboxMode === 'read-only'
-              ? '当前为 read-only 模式，无法授予写权限'
-              : '允许本次 @ 使用 write/edit',
-          }),
-          ' 允许本次写入')
-        : null,
+    // V0.4.1: custom composer — taller textarea + embedded toolbar (left
+    // tools: @ select + write toggle; right: send), mirroring the main input.
+    // Focus highlights the OUTER capsule (uniform rounded border); the inner
+    // textarea carries no border/outline of its own.
+    createElement('div', {
+      style: { ...composerBoxStyle, borderColor: composerFocused ? '#2563eb' : '#d1d5db' },
+      onFocusCapture: () => setComposerFocused(true),
+      onBlurCapture: () => setComposerFocused(false),
+    },
       createElement('textarea', {
-        style: { ...inputStyle, flex: 1, minHeight: 42, resize: 'vertical' },
+        style: { ...composerTextareaStyle, outline: 'none' },
         placeholder: running ? '插话内容（本轮剩余 AI 可见）' : '输入议题，开始一轮讨论',
         value: text,
         onChange: (event: ReactChangeEvent<HTMLTextAreaElement>) => setText(event.target.value),
@@ -734,72 +998,199 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void sendMessage()
         },
       }),
-      createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || text.trim().length === 0, onClick: () => { void sendMessage() } }, '发送'),
+      createElement('div', { style: composerToolbarStyle },
+        createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 } },
+          group.mentionEnabled && aiMembers.length > 0
+            ? createElement('select', { style: { ...inputStyle, width: 140, padding: '4px 6px', fontSize: 12 }, value: mentionId, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setMentionId(event.target.value) },
+              createElement('option', { value: '' }, '普通发言'),
+              ...aiMembers.map(member => createElement('option', { key: member.id, value: member.name }, `@${member.name}`)))
+            : null,
+          group.mentionEnabled && mentionId !== ''
+            ? createElement('label', {
+              style: {
+                fontSize: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                whiteSpace: 'nowrap',
+                color: group.sandboxMode === 'read-only' ? '#9ca3af' : '#111827',
+              },
+            },
+              createElement('input', {
+                type: 'checkbox',
+                disabled: group.sandboxMode === 'read-only',
+                checked: allowWrite,
+                onChange: event => setAllowWrite(event.target.checked),
+                title: group.sandboxMode === 'read-only'
+                  ? '当前为 read-only 模式，无法授予写权限'
+                  : '允许本次 @ 使用 write/edit',
+              }),
+              ' 允许写入')
+            : null),
+        createElement('button', {
+          type: 'button',
+          style: { ...primaryButtonStyle, padding: '5px 16px' },
+          disabled: busy || text.trim().length === 0,
+          onClick: () => { void sendMessage() },
+        }, '发送'),
+      ),
     ),
   )
 
-  const settings = group === null || !showSettings ? null : createElement('aside', { style: sidebarStyle },
-    createElement('div', { style: labelStyle }, '开启新议题'),
-    createElement('input', { style: inputStyle, placeholder: '新议题内容', value: topicTitle, onChange: event => setTopicTitle(event.target.value) }),
-    createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void startNewTopic() } }, '结束当前并开启新议题'),
-    createElement('div', { style: labelStyle }, '自动多轮讨论'),
-    createElement('div', { style: { display: 'grid', gridTemplateColumns: '70px 1fr', gap: 6, marginBottom: 8 } },
-      createElement('input', { style: inputStyle, value: autoForm.rounds, placeholder: '轮数', onChange: event => setAutoForm({ ...autoForm, rounds: event.target.value }) }),
-      createElement('input', { style: inputStyle, value: autoForm.topic, placeholder: '议题（可选，默认继续当前话题）', onChange: event => setAutoForm({ ...autoForm, topic: event.target.value }) }),
-    ),
-    createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running || aiMembers.length === 0, onClick: () => { void startAuto() } }, busy ? '处理中…' : '启动自动讨论'),
-    createElement('div', { style: { marginTop: 8, paddingTop: 8, borderTop: '1px solid #e2e5ea' } },
-      createElement('div', { style: labelStyle }, '群配置（仅当前群生效，idle 时可修改）'),
-      createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 } },
-        createElement('input', { style: inputStyle, placeholder: 'maxAi (1-5)', value: configForm.maxAi, onChange: event => setConfigForm({ ...configForm, maxAi: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'defaultTimeoutMs', value: configForm.defaultTimeoutMs, onChange: event => setConfigForm({ ...configForm, defaultTimeoutMs: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'waitTimeoutMs', value: configForm.waitTimeoutMs, onChange: event => setConfigForm({ ...configForm, waitTimeoutMs: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'maxPromptMessages (0=不限)', value: configForm.maxPromptMessages, onChange: event => setConfigForm({ ...configForm, maxPromptMessages: event.target.value }) }),
-        createElement('input', { style: inputStyle, placeholder: 'messagePageSize', value: configForm.messagePageSize, onChange: event => setConfigForm({ ...configForm, messagePageSize: event.target.value }) }),
+  const settings = group === null || !showSettings || settingsCollapsed ? null : createElement('aside', { style: { ...sidebarStyle, width: sidebarWidth } },
+    createElement('div', { style: resizeHandleStyle, title: '拖动调整设置面板宽度', onPointerDown: beginSidebarResize }),
+
+    // ── 群管理 ──────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '群管理'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 } },
+          createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy, onClick: () => { void createGroup() } }, '＋新建群'),
+          createElement('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: () => { void exportChat() } }, '导出群聊'),
+          createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void dissolve() } }, '解散群'),
+        ),
+        createElement('div', { style: fieldLabelStyle }, '群名称'),
+        createElement('div', { style: { display: 'flex', gap: 6 } },
+          createElement('input', { style: inputStyle, placeholder: '输入新群名…', value: renameValue, onChange: event => setRenameValue(event.target.value) }),
+          createElement('button', { type: 'button', style: buttonStyle, disabled: busy || renameValue.trim().length === 0, onClick: () => { void renameGroup() } }, '重命名')),
       ),
-      createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'readonlyTools（逗号分隔）', value: configForm.readonlyTools, onChange: event => setConfigForm({ ...configForm, readonlyTools: event.target.value }) }),
-      createElement('button', { type: 'button', style: buttonStyle, disabled: busy || running, onClick: () => { void saveConfig() } }, '保存群配置'),
     ),
-    createElement('div', { style: labelStyle }, '添加 AI 成员'),
-    createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 } },
-      createElement('input', { style: inputStyle, placeholder: '名称', value: memberForm.name, onChange: event => setMemberForm({ ...memberForm, name: event.target.value }) }),
-      createElement('input', {
-        style: inputStyle,
-        placeholder: 'provider',
-        list: 'chatgroup-provider-list',
-        value: memberForm.provider,
-        onChange: event => setMemberForm({ ...memberForm, provider: event.target.value }),
-      }),
-      createElement('input', {
-        style: inputStyle,
-        placeholder: 'model',
-        list: 'chatgroup-model-list',
-        value: memberForm.model,
-        onChange: event => setMemberForm({ ...memberForm, model: event.target.value }),
-      }),
-      createElement('input', { style: inputStyle, placeholder: 'timeoutMs（默认已预填）', value: memberForm.timeout, onChange: event => setMemberForm({ ...memberForm, timeout: event.target.value }) }),
+
+    // ── 讨论控制 ────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '讨论控制'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: fieldLabelStyle }, '开启新议题（结束当前讨论）'),
+        createElement('div', { style: { display: 'flex', gap: 6 } },
+          createElement('input', { style: inputStyle, placeholder: '新议题内容', value: topicTitle, onChange: event => setTopicTitle(event.target.value) }),
+          createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void startNewTopic() } }, '开启新议题')),
+        createElement('div', { style: fieldLabelStyle }, '自动多轮讨论'),
+        createElement('div', { style: { display: 'flex', gap: 6, marginBottom: 6 } },
+          createElement('input', { style: { ...inputStyle, width: 64 }, value: autoForm.rounds, placeholder: '轮数', onChange: event => setAutoForm({ ...autoForm, rounds: event.target.value }) }),
+          createElement('input', { style: inputStyle, value: autoForm.topic, placeholder: '议题（可选）', onChange: event => setAutoForm({ ...autoForm, topic: event.target.value }) }),
+        ),
+        createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running || aiMembers.length === 0, onClick: () => { void startAuto() } }, busy ? '处理中…' : '启动自动讨论'),
+      ),
     ),
-    createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'systemPrompt（可选）', value: memberForm.systemPrompt, onChange: event => setMemberForm({ ...memberForm, systemPrompt: event.target.value }) }),
-    createElement('datalist', { id: 'chatgroup-provider-list' },
-      (catalog?.providers ?? []).map(provider => createElement('option', { key: provider.id, value: provider.id }, provider.name))),
-    createElement('datalist', { id: 'chatgroup-model-list' },
-      (selectedProvider?.models ?? []).map(model => createElement('option', { key: model, value: model }))),
-    createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running, onClick: () => { void addMember() } }, busy ? '处理中…' : '添加成员'),
-    aiMembers.length > 0 ? createElement(Fragment, null,
-      createElement('div', { style: labelStyle }, '成员'),
-      ...aiMembers.map(member => createElement('div', {
-        key: member.id,
-        style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 },
-      },
-        createElement('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' } }, `${member.name} · ${member.ai?.provider}/${member.ai?.model}`),
-        createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void removeMember(member.name) } }, '移除'))),
-      createElement('div', { style: labelStyle }, '发言顺序（用逗号分隔）'),
-      createElement('input', { style: inputStyle, value: orderText, onChange: event => setOrderText(event.target.value) }),
-      createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void saveOrder() } }, '保存顺序'),
-      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
-        createElement('span', { style: { fontSize: 13 } }, `@ 功能：${group.mentionEnabled ? '开启' : '关闭'}`),
-        createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void toggleMention() } }, group.mentionEnabled ? '关闭' : '开启')),
-    ) : null,
+
+    // ── 群配置 ──────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '群配置（仅当前群，空闲时可改）'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxAi.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxAi} · ${CONFIG_LABELS.maxAi.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxAi, onChange: event => setConfigForm({ ...configForm, maxAi: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxGroups.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxGroups} · ${CONFIG_LABELS.maxGroups.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxGroups, onChange: event => setConfigForm({ ...configForm, maxGroups: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.defaultTimeoutMs.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.defaultTimeoutMs} · ${CONFIG_LABELS.defaultTimeoutMs.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.defaultTimeoutMs, onChange: event => setConfigForm({ ...configForm, defaultTimeoutMs: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxPromptMessages.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxPromptMessages} · ${CONFIG_LABELS.maxPromptMessages.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxPromptMessages, onChange: event => setConfigForm({ ...configForm, maxPromptMessages: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxEditableMessages.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxEditableMessages} · ${CONFIG_LABELS.maxEditableMessages.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxEditableMessages, onChange: event => setConfigForm({ ...configForm, maxEditableMessages: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.waitTimeoutMs.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.waitTimeoutMs} · ${CONFIG_LABELS.waitTimeoutMs.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.waitTimeoutMs, onChange: event => setConfigForm({ ...configForm, waitTimeoutMs: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.messagePageSize.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.messagePageSize} · ${CONFIG_LABELS.messagePageSize.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.messagePageSize, onChange: event => setConfigForm({ ...configForm, messagePageSize: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.readonlyTools.label,
+          createElement('span', { style: fieldHintStyle }, CONFIG_LABELS.readonlyTools.hint)),
+        createElement('input', { style: inputStyle, value: configForm.readonlyTools, onChange: event => setConfigForm({ ...configForm, readonlyTools: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.aiProactive.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.aiProactive === 'true' ? '开' : '关'} · ${CONFIG_LABELS.aiProactive.hint}`)),
+        createElement('select', { style: inputStyle, value: configForm.aiProactive, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setConfigForm({ ...configForm, aiProactive: event.target.value }) },
+          createElement('option', { value: 'false' }, '关闭'),
+          createElement('option', { value: 'true' }, '开启')),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxProactivePerRound.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxProactivePerRound} · ${CONFIG_LABELS.maxProactivePerRound.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxProactivePerRound, onChange: event => setConfigForm({ ...configForm, maxProactivePerRound: event.target.value }) }),
+
+        createElement('div', { style: fieldLabelStyle },
+          CONFIG_LABELS.maxAiMentionDepth.label,
+          createElement('span', { style: fieldHintStyle }, `当前 ${configForm.maxAiMentionDepth} · ${CONFIG_LABELS.maxAiMentionDepth.hint}`)),
+        createElement('input', { style: inputStyle, value: configForm.maxAiMentionDepth, onChange: event => setConfigForm({ ...configForm, maxAiMentionDepth: event.target.value }) }),
+
+        createElement('button', { type: 'button', style: buttonStyle, disabled: busy || running, onClick: () => { void saveConfig() } }, '保存群配置'),
+      ),
+    ),
+
+    // ── 成员管理 ────────────────────────────────────────────────────────────
+    createElement('details', { style: sectionStyle, open: true },
+      createElement('summary', { style: sectionSummaryStyle }, '成员管理'),
+      createElement('div', { style: sectionBodyStyle },
+        createElement('div', { style: fieldLabelStyle }, '添加 AI 成员'),
+        createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 } },
+          createElement('input', { style: inputStyle, placeholder: '名称', value: memberForm.name, onChange: event => setMemberForm({ ...memberForm, name: event.target.value }) }),
+          createElement('input', {
+            style: inputStyle,
+            placeholder: 'provider',
+            list: 'chatgroup-provider-list',
+            value: memberForm.provider,
+            onChange: event => setMemberForm({ ...memberForm, provider: event.target.value }),
+          }),
+          createElement('input', {
+            style: inputStyle,
+            placeholder: 'model',
+            list: 'chatgroup-model-list',
+            value: memberForm.model,
+            onChange: event => setMemberForm({ ...memberForm, model: event.target.value }),
+          }),
+          createElement('input', { style: inputStyle, placeholder: 'timeoutMs（默认已预填）', value: memberForm.timeout, onChange: event => setMemberForm({ ...memberForm, timeout: event.target.value }) }),
+        ),
+        createElement('input', { style: { ...inputStyle, marginTop: 6 }, placeholder: 'systemPrompt（可选）', value: memberForm.systemPrompt, onChange: event => setMemberForm({ ...memberForm, systemPrompt: event.target.value }) }),
+        createElement('datalist', { id: 'chatgroup-provider-list' },
+          (catalog?.providers ?? []).map(provider => createElement('option', { key: provider.id, value: provider.id }, provider.name))),
+        createElement('datalist', { id: 'chatgroup-model-list' },
+          (selectedProvider?.models ?? []).map(model => createElement('option', { key: model, value: model }))),
+        createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || running, onClick: () => { void addMember() } }, busy ? '处理中…' : '添加成员'),
+
+        aiMembers.length > 0 ? createElement(Fragment, null,
+          createElement('div', { style: fieldLabelStyle }, '成员列表'),
+          ...aiMembers.map(member => createElement('div', {
+            key: member.id,
+            style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 },
+          },
+            createElement('div', { style: { flex: 1, minWidth: 0, overflow: 'hidden' } },
+              createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                `${member.name} · ${member.ai?.provider}/${member.ai?.model}`),
+              group.memberUsage?.[member.id] === undefined
+                ? null
+                : createElement('div', { style: { fontSize: 10, color: '#6b7280', marginTop: 1 } },
+                  memberUsageText(group.memberUsage[member.id]))),
+            createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void removeMember(member.name) } }, '移除'))),
+          createElement('div', { style: fieldLabelStyle }, '发言顺序（用逗号分隔）'),
+          createElement('input', { style: inputStyle, value: orderText, onChange: event => setOrderText(event.target.value) }),
+          createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void saveOrder() } }, '保存顺序'),
+          createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 } },
+            createElement('span', { style: { fontSize: 13 } }, `@ 功能：${group.mentionEnabled ? '开启' : '关闭'}`),
+            createElement('button', { type: 'button', style: buttonStyle, disabled: running, onClick: () => { void toggleMention() } }, group.mentionEnabled ? '关闭' : '开启')),
+        ) : null,
+      ),
+    ),
   )
 
   const content = group === null
@@ -841,7 +1232,7 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
       settings,
     )
 
-  return createElement('aside', { style: { ...drawerStyle, width: drawerWidth }, 'aria-label': '群聊面板' },
+  return createElement('aside', { ref: panelRef, style: { ...drawerStyle, width: drawerWidth }, 'aria-label': '群聊面板' },
     createElement('div', { style: resizeHandleStyle, title: '拖动调整宽度', onPointerDown: beginResize }),
     header,
     error === null ? null : createElement('div', { style: { padding: '6px 12px', background: '#fef2f2', color: '#b91c1c', fontSize: 12 } }, error),

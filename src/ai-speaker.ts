@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
 import type { AiMemberConfig, MessageStatus } from './types.js'
@@ -9,6 +9,15 @@ export interface SpeakOutcome {
   readonly text: string
   readonly status: Exclude<MessageStatus, 'sent'>
   readonly detail?: string
+}
+
+/** Token accounting surfaced for one AI utterance (V2.6). */
+export interface SpeakUsage {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens?: number
+  readonly cacheWriteTokens?: number
+  readonly reasoningTokens?: number
 }
 
 /** Run one AI member utterance through the `spawn` one-shot subagent provider. */
@@ -21,6 +30,8 @@ export async function speakOnce(
   prompt: string,
   signal: AbortSignal,
   onTextDelta?: (delta: string) => void,
+  onToolActivity?: (activity: { tool: string; argsPreview: string; active: boolean }) => void,
+  onUsage?: (usage: SpeakUsage) => void,
 ): Promise<SpeakOutcome> {
   if (signal.aborted) {
     return { text: '', status: 'cancelled', detail: 'speech aborted before start' }
@@ -29,6 +40,9 @@ export async function speakOnce(
   let run: SubagentRun | undefined
   let streamedText = ''
   let disposeChunkListener: (() => boolean) | undefined
+  let disposeToolListener: (() => boolean) | undefined
+  let disposeUsageListener: (() => boolean) | undefined
+  let lastUsage: SpeakUsage | undefined
 
   try {
     run = await ctx.subagents.start('spawn', {
@@ -57,6 +71,43 @@ export async function speakOnce(
       })
     }
 
+    // V2.5: surface read-only tool activity (call start/result) for the panel.
+    if (childSessionId !== undefined && onToolActivity !== undefined) {
+      disposeToolListener = ctx.on('session/event', (session, event) => {
+        if (session.id !== childSessionId) return
+        if (event.type === 'tool/call') {
+          const data = event.data as { name?: string; arguments?: string }
+          onToolActivity({ tool: data.name ?? 'tool', argsPreview: previewArgs(data.arguments), active: true })
+        } else if (event.type === 'tool/result') {
+          const data = event.data as { name?: string }
+          onToolActivity({ tool: data.name ?? 'tool', argsPreview: '', active: false })
+        }
+      })
+    }
+
+    // V2.6: collect token usage from the child session (usage chunk + message usage).
+    if (childSessionId !== undefined && onUsage !== undefined) {
+      disposeUsageListener = ctx.on('session/event', (session, event) => {
+        if (session.id !== childSessionId) return
+        let usage: SpeakUsage | undefined
+        if (event.type === 'assistant/chunk') {
+          const chunk = event.data.chunk
+          if (chunk.type === 'usage' && chunk.usage !== undefined) {
+            usage = normalizeUsage(chunk.usage)
+          }
+        } else if (event.type === 'assistant/message') {
+          const usageField = (event.data as { usage?: unknown }).usage
+          if (isUsageRecord(usageField)) {
+            usage = normalizeUsage(usageField as unknown as TokenUsage)
+          }
+        }
+        if (usage !== undefined && (lastUsage === undefined || usage.outputTokens >= lastUsage.outputTokens)) {
+          lastUsage = usage
+          onUsage(usage)
+        }
+      })
+    }
+
     const result: SubagentResult = await run.result
     if (signal.aborted) {
       return { text: streamedText, status: 'cancelled', detail: 'speech aborted' }
@@ -80,9 +131,42 @@ export async function speakOnce(
     }
   } finally {
     disposeChunkListener?.()
+    disposeToolListener?.()
+    disposeUsageListener?.()
     if (run !== undefined) {
       await run.dispose()
     }
+  }
+}
+
+function isUsageRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && typeof (value as { inputTokens?: unknown }).inputTokens === 'number'
+}
+
+function normalizeUsage(value: TokenUsage): SpeakUsage {
+  return {
+    inputTokens: Number(value.inputTokens) || 0,
+    outputTokens: Number(value.outputTokens) || 0,
+    ...typeof value.cacheReadTokens === 'number' ? { cacheReadTokens: value.cacheReadTokens } : {},
+    ...typeof value.cacheWriteTokens === 'number' ? { cacheWriteTokens: value.cacheWriteTokens } : {},
+    ...typeof value.reasoningTokens === 'number' ? { reasoningTokens: value.reasoningTokens } : {},
+  }
+}
+
+function previewArgs(raw: string | undefined): string {
+  if (raw === undefined || raw.length === 0) return ''
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const path = typeof parsed.path === 'string'
+      ? parsed.path
+      : typeof parsed.filespec === 'string'
+        ? parsed.filespec
+        : typeof parsed.target === 'string'
+          ? parsed.target
+          : undefined
+    return path ?? raw.slice(0, 60)
+  } catch {
+    return raw.slice(0, 60)
   }
 }
 

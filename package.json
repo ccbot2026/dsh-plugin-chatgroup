@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-chatgroup",
-  "version": "0.2.0",
+  "version": "0.4.1",
   "description": "Group chat plugin for DeepSeek Harness (dsh): one human + up to five AI members discussing project requirements in rounds.",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
-import type { ChatGroupConfig, ChatGroupMessage, ChatGroupSnapshot, CreateAiMemberInput } from '../types.js'
+import type { ChatGroupConfig, ChatGroupMessage, ChatGroupSnapshot, ChatGroupSummary, CreateAiMemberInput, GroupId } from '../types.js'
 
 const CHANNEL = '/chatgroup'
 
@@ -48,68 +48,88 @@ async function call<T>(rpc: ClientConnectionRpc, endpoint: string, payload: unkn
 export class ChatGroupRpcClient {
   constructor(private readonly rpc: ClientConnectionRpc) {}
 
-  snapshot(sessionId: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'snapshot', { sessionId }, signal)
+  snapshot(sessionId: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'snapshot', { sessionId, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  wait(sessionId: string, revision: number, signal?: AbortSignal): Promise<WaitEnvelope> {
-    return call(this.rpc, 'wait', { sessionId, revision }, signal)
+  wait(sessionId: string, revision: number, groupId?: GroupId, signal?: AbortSignal): Promise<WaitEnvelope> {
+    return call(this.rpc, 'wait', { sessionId, revision, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  messagesBefore(sessionId: string, beforeSeq: number, limit?: number, signal?: AbortSignal): Promise<MessagesPage> {
-    return call(this.rpc, 'messages.before', { sessionId, beforeSeq, ...limit === undefined ? {} : { limit } }, signal)
+  messagesBefore(sessionId: string, beforeSeq: number, limit?: number, groupId?: GroupId, signal?: AbortSignal): Promise<MessagesPage> {
+    return call(this.rpc, 'messages.before', { sessionId, beforeSeq, ...groupId === undefined ? {} : { groupId }, ...limit === undefined ? {} : { limit } }, signal)
   }
 
-  topicMessages(sessionId: string, topicId: string, signal?: AbortSignal): Promise<{ messages: ChatGroupMessage[] }> {
-    return call(this.rpc, 'topic.messages', { sessionId, topicId }, signal)
+  topicMessages(sessionId: string, topicId: string, groupId?: GroupId, signal?: AbortSignal): Promise<{ messages: ChatGroupMessage[] }> {
+    return call(this.rpc, 'topic.messages', { sessionId, topicId, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
   create(sessionId: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
     return call(this.rpc, 'create', { sessionId }, signal)
   }
 
-  dissolve(sessionId: string, signal?: AbortSignal): Promise<null> {
-    return call(this.rpc, 'dissolve', { sessionId }, signal)
+  dissolve(sessionId: string, groupId?: GroupId, signal?: AbortSignal): Promise<null> {
+    return call(this.rpc, 'dissolve', { sessionId, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  send(sessionId: string, text: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'send', { sessionId, text }, signal)
+  send(sessionId: string, text: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'send', { sessionId, text, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  at(sessionId: string, memberName: string, text: string, options: { writeAccess?: boolean } = {}, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'at', { sessionId, memberName, text, writeAccess: options.writeAccess === true }, signal)
+  at(sessionId: string, memberName: string, text: string, options: { writeAccess?: boolean } = {}, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'at', { sessionId, memberName, text, writeAccess: options.writeAccess === true, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  startAuto(sessionId: string, maxRounds: number, topic?: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'auto.start', { sessionId, maxRounds, topic }, signal)
+  startAuto(sessionId: string, maxRounds: number, topic?: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'auto.start', { sessionId, maxRounds, topic, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  startTopic(sessionId: string, title: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'topic.start', { sessionId, title }, signal)
+  startTopic(sessionId: string, title: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'topic.start', { sessionId, title, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  stop(sessionId: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'stop', { sessionId }, signal)
+  stop(sessionId: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'stop', { sessionId, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  addMember(sessionId: string, member: CreateAiMemberInput, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'members.add', { sessionId, member }, signal)
+  editMessage(sessionId: string, seq: number, text: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'messages.edit', { sessionId, seq, text, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  removeMember(sessionId: string, memberName: string, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'members.remove', { sessionId, memberName }, signal)
+  withdrawMessage(sessionId: string, seq: number, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'messages.withdraw', { sessionId, seq, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
-  reorderMembers(sessionId: string, names: string[], signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'members.reorder', { sessionId, names }, signal)
+  listGroups(sessionId: string, signal?: AbortSignal): Promise<{ groups: ChatGroupSummary[] }> {
+    return call(this.rpc, 'groups.list', { sessionId }, signal)
   }
 
-  setMentionEnabled(sessionId: string, enabled: boolean, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'settings.update', { sessionId, mentionEnabled: enabled }, signal)
+  useGroup(sessionId: string, groupId: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'groups.use', { sessionId, groupId }, signal)
   }
 
-  updateConfig(sessionId: string, patch: Partial<ChatGroupConfig>, signal?: AbortSignal): Promise<SnapshotEnvelope> {
-    return call(this.rpc, 'settings.config.update', { sessionId, ...patch }, signal)
+  renameGroup(sessionId: string, name: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'groups.rename', { sessionId, name, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
+  addMember(sessionId: string, member: CreateAiMemberInput, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'members.add', { sessionId, member, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
+  removeMember(sessionId: string, memberName: string, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'members.remove', { sessionId, memberName, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
+  reorderMembers(sessionId: string, names: string[], groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'members.reorder', { sessionId, names, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
+  setMentionEnabled(sessionId: string, enabled: boolean, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'settings.update', { sessionId, mentionEnabled: enabled, ...groupId === undefined ? {} : { groupId } }, signal)
+  }
+
+  updateConfig(sessionId: string, patch: Partial<ChatGroupConfig>, groupId?: GroupId, signal?: AbortSignal): Promise<SnapshotEnvelope> {
+    return call(this.rpc, 'settings.config.update', { sessionId, ...patch, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 
   catalog(signal?: AbortSignal): Promise<ModelCatalog> {
@@ -120,7 +140,7 @@ export class ChatGroupRpcClient {
     return call(this.rpc, 'config.get', { sessionId: '' }, signal)
   }
 
-  exportTranscript(sessionId: string, signal?: AbortSignal): Promise<{ content: string; filename: string }> {
-    return call(this.rpc, 'export', { sessionId }, signal)
+  exportTranscript(sessionId: string, groupId?: GroupId, signal?: AbortSignal): Promise<{ content: string; filename: string }> {
+    return call(this.rpc, 'export', { sessionId, ...groupId === undefined ? {} : { groupId } }, signal)
   }
 }

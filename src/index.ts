@@ -2,7 +2,18 @@ import type { Context } from '@deepseek-ai/cordis'
 import { registerChatGroupCommands } from './commands.js'
 import { ChatGroupService } from './group-service.js'
 import { registerChatGroupRpc } from './rpc.js'
-import { DEFAULT_MAX_AI, DEFAULT_MAX_PROMPT_MESSAGES, DEFAULT_MESSAGE_PAGE_SIZE, DEFAULT_READONLY_TOOLS, DEFAULT_SPEECH_TIMEOUT_MS, DEFAULT_WAIT_TIMEOUT_MS } from './types.js'
+import {
+  DEFAULT_AI_PROACTIVE,
+  DEFAULT_MAX_AI,
+  DEFAULT_MAX_AI_MENTION_DEPTH,
+  DEFAULT_MAX_GROUPS,
+  DEFAULT_MAX_PROACTIVE_PER_ROUND,
+  DEFAULT_MAX_PROMPT_MESSAGES,
+  DEFAULT_MESSAGE_PAGE_SIZE,
+  DEFAULT_READONLY_TOOLS,
+  DEFAULT_SPEECH_TIMEOUT_MS,
+  DEFAULT_WAIT_TIMEOUT_MS,
+} from './types.js'
 import type { ChatGroupConfig } from './types.js'
 
 export const name = 'chatgroup'
@@ -11,11 +22,16 @@ export const inject = ['subagents', 'commands']
 export function apply(ctx: Context, config: Partial<ChatGroupConfig> = {}): void {
   const service = new ChatGroupService(ctx, {
     maxAi: config.maxAi ?? DEFAULT_MAX_AI,
+    maxGroups: config.maxGroups ?? DEFAULT_MAX_GROUPS,
     defaultTimeoutMs: config.defaultTimeoutMs ?? DEFAULT_SPEECH_TIMEOUT_MS,
     readonlyTools: config.readonlyTools ?? DEFAULT_READONLY_TOOLS,
     waitTimeoutMs: config.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
     maxPromptMessages: config.maxPromptMessages ?? DEFAULT_MAX_PROMPT_MESSAGES,
     messagePageSize: config.messagePageSize ?? DEFAULT_MESSAGE_PAGE_SIZE,
+    maxEditableMessages: config.maxEditableMessages,
+    aiProactive: config.aiProactive ?? DEFAULT_AI_PROACTIVE,
+    maxProactivePerRound: config.maxProactivePerRound ?? DEFAULT_MAX_PROACTIVE_PER_ROUND,
+    maxAiMentionDepth: config.maxAiMentionDepth ?? DEFAULT_MAX_AI_MENTION_DEPTH,
   })
 
   const commandDisposers = registerChatGroupCommands(ctx, service)
@@ -45,10 +61,12 @@ export type {
   ChatGroupMember,
   ChatGroupMessage,
   ChatGroupSnapshot,
+  ChatGroupSummary,
   CreateAiMemberInput,
+  GroupId,
   GroupStatus,
   MemberKind,
   MemberRole,
   MessageStatus,
 } from './types.js'
-export { DEFAULT_MAX_AI, DEFAULT_READONLY_TOOLS, DEFAULT_SPEECH_TIMEOUT_MS, USER_MEMBER_ID } from './types.js'
+export { DEFAULT_MAX_AI, DEFAULT_MAX_GROUPS, DEFAULT_READONLY_TOOLS, DEFAULT_SPEECH_TIMEOUT_MS, USER_MEMBER_ID } from './types.js'

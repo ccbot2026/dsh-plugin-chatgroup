@@ -17,6 +17,8 @@ export function buildVisibleMessages(
     if (message.topicId !== undefined && message.topicId !== topicId) return false
     // The in-flight placeholder is never part of the transcript.
     if (message.status === 'speaking') return false
+    // Withdrawn messages vanish from every prompt (V2.2).
+    if (message.status === 'withdrawn') return false
     if (message.senderId === USER_MEMBER_ID || message.senderId === SYSTEM_MEMBER_ID) return true
     if (message.senderId === targetMemberId) return true
     return !blind
@@ -40,7 +42,13 @@ export function buildMemberPrompt(
   group: ChatGroupSnapshot,
   member: ChatGroupMember,
   maxPromptMessages = 0,
-  options: { writeAccess?: boolean } = {},
+  options: {
+    writeAccess?: boolean
+    /** V0.4.0-③: 'reply' (normal round) | 'mention' (asked by another AI) | 'proactive' (optional remark). */
+    intent?: 'reply' | 'mention' | 'proactive'
+    /** V0.4.0-③: whom this member was asked to address, if any. */
+    mentionTargetName?: string
+  } = {},
 ): string {
   const lines: string[] = [
     `你是群聊成员“${member.name}”。`,
@@ -54,6 +62,27 @@ export function buildMemberPrompt(
       ? ['本轮你被临时授予写权限：可以使用 write、edit 工具，在当前沙箱允许范围内写入文件。']
       : [],
   ]
+
+  // V0.4.0-③: intent-specific guidance improves focus and reduces tangents.
+  if (options.intent === 'mention' && options.mentionTargetName !== undefined) {
+    lines.push('', `你被成员点名回应。请直接、简洁地回应对方，不要重复已说过的内容。`)
+  } else if (options.intent === 'proactive') {
+    lines.push('', '这是本轮讨论结束后的补充机会：只补充尚未被其他成员提到的关键信息或不同观点；若无必要，请明确回复“无需补充”。')
+  } else {
+    lines.push('', '请围绕当前议题发言，保持简洁聚焦；不要重复其他成员已表达的观点，除非你有不同判断。')
+  }
+
+  // V0.4.0-③: how to @ another member (only when other AI exist).
+  const aiOthers = group.members.filter(candidate => candidate.kind === 'ai' && candidate.id !== member.id)
+  if (aiOthers.length > 0) {
+    const names = aiOthers.map(candidate => `@${candidate.name}`).join('、')
+    lines.push('', `如需请其他成员补充或回应，在回复中直接写 ${names} 并附上你的问题。`)
+  }
+
+  // Blind-round clarity: the member cannot see others' first-round replies.
+  if (group.blindRoundActive) {
+    lines.push('', '（本轮为盲发：你暂时看不到其他成员的回复，请基于用户议题独立发言。）')
+  }
 
   if (member.ai?.systemPrompt?.trim()) {
     lines.push('', '你额外的成员设定：', member.ai.systemPrompt.trim())
@@ -105,7 +134,11 @@ export function buildMemberPrompt(
   for (const message of transcript) {
     const sender = senderName(group, message.senderId)
     if (message.status === 'completed' || message.status === 'sent') {
-      lines.push(`[${sender}]: ${message.text}`)
+      if (message.editedText !== undefined) {
+        lines.push(`[${sender}]（已编辑）: ${message.editedText}`)
+      } else {
+        lines.push(`[${sender}]: ${message.text}`)
+      }
       continue
     }
     if (message.senderId !== USER_MEMBER_ID) {

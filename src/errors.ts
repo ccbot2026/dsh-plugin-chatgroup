@@ -3,6 +3,7 @@
 export type ChatGroupErrorCode =
   | 'NO_GROUP'
   | 'GROUP_EXISTS'
+  | 'GROUP_LIMIT_EXCEEDED'
   | 'GROUP_IDLE_REQUIRED'
   | 'AI_LIMIT_EXCEEDED'
   | 'NO_AI_MEMBERS'
@@ -17,6 +18,9 @@ export type ChatGroupErrorCode =
   | 'WRITE_BLOCKED'
   | 'UNKNOWN_PROVIDER'
   | 'UNKNOWN_TOOL'
+  | 'NOT_ADMIN'
+  | 'MESSAGE_NOT_FOUND'
+  | 'MESSAGE_NOT_EDITABLE'
 
 export class ChatGroupError extends Error {
   readonly code: ChatGroupErrorCode
