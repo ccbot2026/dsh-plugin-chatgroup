@@ -114,6 +114,36 @@ const inputStyle: React.CSSProperties = {
   fontSize: 13,
 }
 
+/** V0.4.1: custom composer capsule (textarea + embedded toolbar, like main input). */
+const composerBoxStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  border: '1px solid #d1d5db',
+  borderRadius: 10,
+  background: '#ffffff',
+  overflow: 'hidden',
+}
+
+const composerTextareaStyle: React.CSSProperties = {
+  ...inputStyle,
+  border: 'none',
+  borderRadius: 0,
+  flex: 1,
+  minHeight: 72,
+  resize: 'vertical',
+  fontSize: 14,
+  lineHeight: 1.5,
+}
+
+const composerToolbarStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 8px',
+  borderTop: '1px solid #eef0f3',
+  background: '#fafbfc',
+}
+
 const labelStyle: React.CSSProperties = { fontSize: 12, color: '#4b5563', margin: '8px 0 3px' }
 
 /** Collapsible settings section. */
@@ -254,6 +284,8 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
   })
   const sidebarWidthRef = useRef(sidebarWidth)
   const [settingsCollapsed, setSettingsCollapsed] = useState(false)
+  /** V0.4.1: composer capsule focus ring (uniform rounded border). */
+  const [composerFocused, setComposerFocused] = useState(false)
 
   function beginResize(event: ReactPointerEvent<HTMLDivElement>): void {
     event.preventDefault()
@@ -948,35 +980,17 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
         ? createElement('button', { type: 'button', style: dangerButtonStyle, disabled: busy, onClick: () => { void stopRound() } }, '结束本轮')
         : null,
     ),
-    createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-      group.mentionEnabled && aiMembers.length > 0
-        ? createElement('select', { style: { ...inputStyle, width: 140 }, value: mentionId, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setMentionId(event.target.value) },
-          createElement('option', { value: '' }, '普通发言'),
-          ...aiMembers.map(member => createElement('option', { key: member.id, value: member.name }, `@${member.name}`)))
-        : null,
-      group.mentionEnabled && mentionId !== ''
-        ? createElement('label', {
-          style: {
-            fontSize: 12,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            color: group.sandboxMode === 'read-only' ? '#9ca3af' : '#111827',
-          },
-        },
-          createElement('input', {
-            type: 'checkbox',
-            disabled: group.sandboxMode === 'read-only',
-            checked: allowWrite,
-            onChange: event => setAllowWrite(event.target.checked),
-            title: group.sandboxMode === 'read-only'
-              ? '当前为 read-only 模式，无法授予写权限'
-              : '允许本次 @ 使用 write/edit',
-          }),
-          ' 允许本次写入')
-        : null,
+    // V0.4.1: custom composer — taller textarea + embedded toolbar (left
+    // tools: @ select + write toggle; right: send), mirroring the main input.
+    // Focus highlights the OUTER capsule (uniform rounded border); the inner
+    // textarea carries no border/outline of its own.
+    createElement('div', {
+      style: { ...composerBoxStyle, borderColor: composerFocused ? '#2563eb' : '#d1d5db' },
+      onFocusCapture: () => setComposerFocused(true),
+      onBlurCapture: () => setComposerFocused(false),
+    },
       createElement('textarea', {
-        style: { ...inputStyle, flex: 1, minHeight: 42, resize: 'vertical' },
+        style: { ...composerTextareaStyle, outline: 'none' },
         placeholder: running ? '插话内容（本轮剩余 AI 可见）' : '输入议题，开始一轮讨论',
         value: text,
         onChange: (event: ReactChangeEvent<HTMLTextAreaElement>) => setText(event.target.value),
@@ -984,7 +998,42 @@ export function ChatGroupPanel({ controller, rpc, useSessions }: ChatGroupPanelP
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void sendMessage()
         },
       }),
-      createElement('button', { type: 'button', style: primaryButtonStyle, disabled: busy || text.trim().length === 0, onClick: () => { void sendMessage() } }, '发送'),
+      createElement('div', { style: composerToolbarStyle },
+        createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 } },
+          group.mentionEnabled && aiMembers.length > 0
+            ? createElement('select', { style: { ...inputStyle, width: 140, padding: '4px 6px', fontSize: 12 }, value: mentionId, onChange: (event: ReactChangeEvent<HTMLSelectElement>) => setMentionId(event.target.value) },
+              createElement('option', { value: '' }, '普通发言'),
+              ...aiMembers.map(member => createElement('option', { key: member.id, value: member.name }, `@${member.name}`)))
+            : null,
+          group.mentionEnabled && mentionId !== ''
+            ? createElement('label', {
+              style: {
+                fontSize: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                whiteSpace: 'nowrap',
+                color: group.sandboxMode === 'read-only' ? '#9ca3af' : '#111827',
+              },
+            },
+              createElement('input', {
+                type: 'checkbox',
+                disabled: group.sandboxMode === 'read-only',
+                checked: allowWrite,
+                onChange: event => setAllowWrite(event.target.checked),
+                title: group.sandboxMode === 'read-only'
+                  ? '当前为 read-only 模式，无法授予写权限'
+                  : '允许本次 @ 使用 write/edit',
+              }),
+              ' 允许写入')
+            : null),
+        createElement('button', {
+          type: 'button',
+          style: { ...primaryButtonStyle, padding: '5px 16px' },
+          disabled: busy || text.trim().length === 0,
+          onClick: () => { void sendMessage() },
+        }, '发送'),
+      ),
     ),
   )
 
