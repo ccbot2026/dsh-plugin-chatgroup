@@ -4,4 +4,4 @@ dist/
 *.tgz
 .dsh/
 .idea
-docs/
+dev-docs/
