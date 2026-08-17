@@ -2,7 +2,7 @@
 
 DeepSeek Harness (dsh) 群聊插件：在当前 dsh 会话中创建由 1 个人类用户和多个 AI 成员组成的讨论群（v0.4.1，支持多群）。
 
-详细需求与技术方案见 [`docs/chatgroup-prd-tech-design.md`](docs/chatgroup-prd-tech-design.md)；阶段总结见 [`dev-docs/阶段总结-v0.2.0.md`](dev-docs/阶段总结-v0.2.0.md)；V2 变更见 [`CHANGELOG.md`](CHANGELOG.md)。
+详细需求与技术方案见 [`dev-docs/chatgroup-prd-tech-design.md`](dev-docs/chatgroup-prd-tech-design.md)。
 
 ## 当前进度
 
