@@ -35,7 +35,7 @@ npm test
 推荐直接装进内置 `web` profile：
 
 ```sh
-dsh plugin --profile web add /home/sll/projects/dsh-plugin-chatgroup
+dsh plugin --profile web add /path/to/project/dsh-plugin-chatgroup
 dsh web --port 3081
 ```
 
@@ -45,7 +45,7 @@ dsh web --port 3081
 `dsh.profile.bundles`：
 
 ```sh
-dsh plugin --profile dsh-chatgroup add /home/sll/projects/dsh-plugin-chatgroup
+dsh plugin --profile dsh-chatgroup add /path/to/project/dsh-plugin-chatgroup
 ```
 
 编辑 `~/.dsh/profiles/dsh-chatgroup/package.json` 为：
@@ -55,7 +55,7 @@ dsh plugin --profile dsh-chatgroup add /home/sll/projects/dsh-plugin-chatgroup
   "name": "dsh-profile-dsh-chatgroup",
   "private": true,
   "dependencies": {
-    "dsh-plugin-chatgroup": "link:/home/sll/projects/dsh-plugin-chatgroup"
+    "dsh-plugin-chatgroup": "link:/path/to/project/dsh-plugin-chatgroup"
   },
   "dsh": {
     "profile": {
